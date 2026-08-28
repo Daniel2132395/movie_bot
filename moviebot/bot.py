@@ -374,6 +374,26 @@ async def main():
     dp.include_router(router)
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
+from flask import Flask
+from threading import Thread
+
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is running!"
+
+def run():
+    app.run(host='0.0.0.0', port=8080)
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+
+# این تابع را قبل از شروعِ بات (قبل از polling) صدا بزنید
+keep_alive() 
+
+# حالا کدهای اصلی بات خودتان را اینجا بنویسید...
 
 
 if __name__ == "__main__":
