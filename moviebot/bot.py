@@ -5,6 +5,7 @@ from threading import Thread
 
 import aiohttp
 from flask import Flask
+
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
@@ -17,6 +18,7 @@ from data.imdb_top import IMDB_TOP
 from data.genre_extra import GENRE_EXTRA
 from data.people import ACTORS, DIRECTORS
 from data.upcoming import UPCOMING
+
 from keyboards import (
     back_kb,
     genre_kb,
@@ -26,8 +28,21 @@ from keyboards import (
     mood_kb,
     quiz_genre_kb,
 )
+
 from locales import t
 from recommender import recommend
+
+# ============================================================
+# ADMIN SYSTEM
+# ============================================================
+
+from admin import (
+    admin_router,
+    init_admin_db,
+    track_user,
+    track_search,
+    track_usage,
+)
 
 
 # ============================================================
@@ -57,7 +72,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Bot is running!", 200
+    return "MovieBot is running!", 200
 
 
 @app.route("/health")
@@ -68,7 +83,10 @@ def health():
 def run_web_server():
     port = int(os.getenv("PORT", "8080"))
 
-    logger.info("Starting web server on port %s", port)
+    logger.info(
+        "Starting web server on port %s",
+        port,
+    )
 
     app.run(
         host="0.0.0.0",
@@ -83,22 +101,29 @@ def keep_alive():
         target=run_web_server,
         daemon=True,
     )
+
     thread.start()
 
 
 # ============================================================
-# BOT
+# BOT ROUTER
 # ============================================================
 
 router = Router()
 
-# In-memory language storage.
-# This is fine for one running bot process.
+
+# ============================================================
+# LANGUAGE STORAGE
+# ============================================================
+
 USER_LANG: dict[int, str] = {}
 
 
 def lang_of(uid: int) -> str:
-    return USER_LANG.get(uid, "en")
+    return USER_LANG.get(
+        uid,
+        "en",
+    )
 
 
 # ============================================================
@@ -124,27 +149,76 @@ class TextSearch(StatesGroup):
 # ============================================================
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, state: FSMContext):
+async def cmd_start(
+    message: Message,
+    state: FSMContext,
+):
+
+    user = message.from_user
+
+    if user is None:
+        return
+
+    # Register/update user
+    await track_user(user)
+
+    # Track usage
+    await track_usage(
+        user.id,
+        "start",
+    )
+
     await state.clear()
 
     await message.answer(
-        t("choose_lang", "en"),
+        t(
+            "choose_lang",
+            "en",
+        ),
         reply_markup=lang_kb(),
     )
 
 
+# ============================================================
+# CANCEL
+# ============================================================
+
 @router.message(Command("cancel"))
-async def cmd_cancel(message: Message, state: FSMContext):
+async def cmd_cancel(
+    message: Message,
+    state: FSMContext,
+):
+
+    user = message.from_user
+
+    if user is None:
+        return
+
+    await track_user(user)
+
+    await track_usage(
+        user.id,
+        "cancel",
+    )
+
     await state.clear()
 
-    lang = lang_of(message.from_user.id)
-
-    await message.answer(
-        t("cancelled", lang)
+    lang = lang_of(
+        user.id
     )
 
     await message.answer(
-        t("welcome", lang),
+        t(
+            "cancelled",
+            lang,
+        )
+    )
+
+    await message.answer(
+        t(
+            "welcome",
+            lang,
+        ),
         reply_markup=main_menu_kb(lang),
     )
 
@@ -153,40 +227,108 @@ async def cmd_cancel(message: Message, state: FSMContext):
 # LANGUAGE
 # ============================================================
 
-@router.callback_query(F.data.startswith("lang:"))
-async def set_lang(call: CallbackQuery, state: FSMContext):
-    lang = call.data.split(":", 1)[1]
+@router.callback_query(
+    F.data.startswith("lang:")
+)
+async def set_lang(
+    call: CallbackQuery,
+    state: FSMContext,
+):
 
-    USER_LANG[call.from_user.id] = lang
+    user = call.from_user
+
+    await track_user(user)
+
+    await track_usage(
+        user.id,
+        "language_change",
+    )
+
+    lang = call.data.split(
+        ":",
+        1,
+    )[1]
+
+    USER_LANG[user.id] = lang
 
     await call.message.edit_text(
-        t("welcome", lang),
+        t(
+            "welcome",
+            lang,
+        ),
         reply_markup=main_menu_kb(lang),
     )
 
     await call.answer()
 
 
-@router.callback_query(F.data == "menu:home")
-async def menu_home(call: CallbackQuery, state: FSMContext):
+# ============================================================
+# HOME
+# ============================================================
+
+@router.callback_query(
+    F.data == "menu:home"
+)
+async def menu_home(
+    call: CallbackQuery,
+    state: FSMContext,
+):
+
+    user = call.from_user
+
+    await track_user(user)
+
+    await track_usage(
+        user.id,
+        "home",
+    )
+
     await state.clear()
 
-    lang = lang_of(call.from_user.id)
+    lang = lang_of(
+        user.id
+    )
 
     await call.message.edit_text(
-        t("welcome", lang),
+        t(
+            "welcome",
+            lang,
+        ),
         reply_markup=main_menu_kb(lang),
     )
 
     await call.answer()
 
 
-@router.callback_query(F.data == "menu:lang")
-async def menu_lang(call: CallbackQuery):
-    lang = lang_of(call.from_user.id)
+# ============================================================
+# LANGUAGE MENU
+# ============================================================
+
+@router.callback_query(
+    F.data == "menu:lang"
+)
+async def menu_lang(
+    call: CallbackQuery,
+):
+
+    user = call.from_user
+
+    await track_user(user)
+
+    await track_usage(
+        user.id,
+        "language_menu",
+    )
+
+    lang = lang_of(
+        user.id
+    )
 
     await call.message.edit_text(
-        t("choose_lang", lang),
+        t(
+            "choose_lang",
+            lang,
+        ),
         reply_markup=lang_kb(),
     )
 
@@ -197,24 +339,73 @@ async def menu_lang(call: CallbackQuery):
 # TOP IMDb
 # ============================================================
 
-def _fmt_entry(idx, title, year, kind, imdb, rt, meta, lang):
-    if kind == "series":
-        kind_label = "سریال" if lang == "fa" else "Series"
-    else:
-        kind_label = "فیلم" if lang == "fa" else "Movie"
+def _fmt_entry(
+    idx,
+    title,
+    year,
+    kind,
+    imdb,
+    rt,
+    meta,
+    lang,
+):
 
-    rt_s = f"{rt}%" if rt is not None else "—"
-    meta_s = f"{meta}" if meta is not None else "—"
+    if kind == "series":
+
+        kind_label = (
+            "سریال"
+            if lang == "fa"
+            else "Series"
+        )
+
+    else:
+
+        kind_label = (
+            "فیلم"
+            if lang == "fa"
+            else "Movie"
+        )
+
+    rt_s = (
+        f"{rt}%"
+        if rt is not None
+        else "—"
+    )
+
+    meta_s = (
+        f"{meta}"
+        if meta is not None
+        else "—"
+    )
 
     return (
-        f"{idx}. <b>{title}</b> ({year}) [{kind_label}]\n"
-        f"    IMDb: {imdb} | RT: {rt_s} | Metacritic: {meta_s}"
+        f"{idx}. <b>{title}</b> ({year}) "
+        f"[{kind_label}]\n"
+        f"    IMDb: {imdb} | "
+        f"RT: {rt_s} | "
+        f"Metacritic: {meta_s}"
     )
 
 
-@router.callback_query(F.data == "menu:top250")
-async def top250(call: CallbackQuery):
-    lang = lang_of(call.from_user.id)
+@router.callback_query(
+    F.data == "menu:top250"
+)
+async def top250(
+    call: CallbackQuery,
+):
+
+    user = call.from_user
+
+    await track_user(user)
+
+    await track_usage(
+        user.id,
+        "top250",
+    )
+
+    lang = lang_of(
+        user.id
+    )
 
     sorted_list = sorted(
         IMDB_TOP,
@@ -232,10 +423,13 @@ async def top250(call: CallbackQuery):
             r[6],
             lang,
         )
-        for i, r in enumerate(sorted_list[:40])
+        for i, r in enumerate(
+            sorted_list[:40]
+        )
     ]
 
     if lang == "fa":
+
         header = (
             "🏆 <b>برترین‌های امتیاز IMDb</b> "
             "(نسخه فشرده — ۴۰ مورد اول از دیتاست داخلی)\n\n"
@@ -247,6 +441,7 @@ async def top250(call: CallbackQuery):
         )
 
     else:
+
         header = (
             "🏆 <b>Top IMDb-rated titles</b> "
             "(showing top 40 of the bundled dataset)\n\n"
@@ -257,7 +452,11 @@ async def top250(call: CallbackQuery):
             "250-title list, add a free OMDb/TMDb key in .env."
         )
 
-    text = header + "\n\n".join(lines) + footer
+    text = (
+        header
+        + "\n\n".join(lines)
+        + footer
+    )
 
     await call.message.edit_text(
         text[:4090],
@@ -271,28 +470,68 @@ async def top250(call: CallbackQuery):
 # GENRES
 # ============================================================
 
-@router.callback_query(F.data == "menu:genre")
-async def menu_genre(call: CallbackQuery):
-    lang = lang_of(call.from_user.id)
+@router.callback_query(
+    F.data == "menu:genre"
+)
+async def menu_genre(
+    call: CallbackQuery,
+):
+
+    user = call.from_user
+
+    await track_user(user)
+
+    await track_usage(
+        user.id,
+        "genre_menu",
+    )
+
+    lang = lang_of(
+        user.id
+    )
 
     await call.message.edit_text(
-        t("pick_genre", lang),
+        t(
+            "pick_genre",
+            lang,
+        ),
         reply_markup=genre_kb(lang),
     )
 
     await call.answer()
 
 
-@router.callback_query(F.data.startswith("genre:"))
-async def show_genre(call: CallbackQuery):
-    lang = lang_of(call.from_user.id)
+@router.callback_query(
+    F.data.startswith("genre:")
+)
+async def show_genre(
+    call: CallbackQuery,
+):
 
-    genre = call.data.split(":", 1)[1]
+    user = call.from_user
+
+    await track_user(user)
+
+    await track_search(
+        user.id,
+        "genre",
+    )
+
+    lang = lang_of(
+        user.id
+    )
+
+    genre = call.data.split(
+        ":",
+        1,
+    )[1]
 
     items = []
 
     for r in IMDB_TOP:
+
         if genre in r[7]:
+
             items.append(
                 (
                     r[1],
@@ -304,10 +543,19 @@ async def show_genre(call: CallbackQuery):
                 )
             )
 
-    for title, year, kind, imdb, rt, meta, genres in GENRE_EXTRA.get(
+    for (
+        title,
+        year,
+        kind,
+        imdb,
+        rt,
+        meta,
+        genres,
+    ) in GENRE_EXTRA.get(
         genre,
         [],
     ):
+
         items.append(
             (
                 title,
@@ -326,9 +574,16 @@ async def show_genre(call: CallbackQuery):
         items,
         key=lambda x: -x[3],
     ):
+
         if item[0] not in seen:
-            seen.add(item[0])
-            uniq.append(item)
+
+            seen.add(
+                item[0]
+            )
+
+            uniq.append(
+                item
+            )
 
     uniq = uniq[:25]
 
@@ -338,20 +593,28 @@ async def show_genre(call: CallbackQuery):
             *row,
             lang,
         )
-        for i, row in enumerate(uniq)
+        for i, row in enumerate(
+            uniq
+        )
     ]
 
     if lang == "en":
+
         title_line = (
             f"🎬 <b>{genre}</b> — Top picks\n\n"
         )
+
     else:
+
         title_line = (
             f"🎬 <b>{genre}</b> — برترین‌ها\n\n"
         )
 
     await call.message.edit_text(
-        (title_line + "\n\n".join(lines))[:4090],
+        (
+            title_line
+            + "\n\n".join(lines)
+        )[:4090],
         reply_markup=genre_kb(lang),
     )
 
@@ -362,13 +625,32 @@ async def show_genre(call: CallbackQuery):
 # UPCOMING
 # ============================================================
 
-@router.callback_query(F.data == "menu:upcoming")
-async def upcoming(call: CallbackQuery):
-    lang = lang_of(call.from_user.id)
+@router.callback_query(
+    F.data == "menu:upcoming"
+)
+async def upcoming(
+    call: CallbackQuery,
+):
+
+    user = call.from_user
+
+    await track_user(user)
+
+    await track_usage(
+        user.id,
+        "upcoming",
+    )
+
+    lang = lang_of(
+        user.id
+    )
 
     if TMDB_API_KEY:
+
         try:
+
             async with aiohttp.ClientSession() as session:
+
                 url = (
                     "https://api.themoviedb.org/3/movie/upcoming"
                     f"?api_key={TMDB_API_KEY}"
@@ -379,29 +661,40 @@ async def upcoming(call: CallbackQuery):
                     url,
                     timeout=10,
                 ) as response:
+
                     data = await response.json()
 
             lines = []
 
-            for movie in data.get("results", [])[:15]:
+            for movie in data.get(
+                "results",
+                [],
+            )[:15]:
+
                 lines.append(
                     f"🎬 <b>{movie.get('title')}</b> — "
                     f"{movie.get('release_date', 'TBA')}"
                 )
 
             if lang == "fa":
+
                 header = (
                     "📅 <b>در انتظار اکران "
                     "(زنده از TMDb)</b>\n\n"
                 )
+
             else:
+
                 header = (
                     "📅 <b>Upcoming releases "
                     "(live from TMDb)</b>\n\n"
                 )
 
             await call.message.edit_text(
-                (header + "\n".join(lines))[:4090],
+                (
+                    header
+                    + "\n".join(lines)
+                )[:4090],
                 reply_markup=back_kb(lang),
             )
 
@@ -410,16 +703,20 @@ async def upcoming(call: CallbackQuery):
             return
 
         except Exception:
+
             logger.exception(
                 "TMDB upcoming request failed"
             )
 
     if lang == "fa":
+
         header = (
             "📅 <b>در انتظار اکران "
             "(فهرست ثابت)</b>\n\n"
         )
+
     else:
+
         header = (
             "📅 <b>Most anticipated upcoming "
             "(static list)</b>\n\n"
@@ -431,11 +728,14 @@ async def upcoming(call: CallbackQuery):
     ]
 
     if lang == "fa":
+
         footer = (
             "\n\nℹ️ برای فهرست زنده و همیشه به‌روز، "
             "TMDB_API_KEY را در .env تنظیم کنید."
         )
+
     else:
+
         footer = (
             "\n\nℹ️ For a live, always-fresh list, "
             "set TMDB_API_KEY in .env."
@@ -461,6 +761,7 @@ async def _tmdb_person_credits(
     name: str,
     lang: str,
 ):
+
     if not TMDB_API_KEY:
         return None
 
@@ -476,9 +777,13 @@ async def _tmdb_person_credits(
             search_url,
             timeout=10,
         ) as response:
+
             data = await response.json()
 
-        results = data.get("results", [])
+        results = data.get(
+            "results",
+            [],
+        )
 
         if not results:
             return None
@@ -495,11 +800,18 @@ async def _tmdb_person_credits(
             credits_url,
             timeout=10,
         ) as response:
+
             credits = await response.json()
 
         cast = sorted(
-            credits.get("cast", [])
-            + credits.get("crew", []),
+            credits.get(
+                "cast",
+                [],
+            )
+            + credits.get(
+                "crew",
+                [],
+            ),
             key=lambda movie: movie.get(
                 "popularity",
                 0,
@@ -520,43 +832,84 @@ async def _tmdb_person_credits(
 # ACTOR
 # ============================================================
 
-@router.callback_query(F.data == "menu:actor")
+@router.callback_query(
+    F.data == "menu:actor"
+)
 async def ask_actor(
     call: CallbackQuery,
     state: FSMContext,
 ):
-    lang = lang_of(call.from_user.id)
+
+    user = call.from_user
+
+    await track_user(user)
+
+    await track_usage(
+        user.id,
+        "actor_menu",
+    )
+
+    lang = lang_of(
+        user.id
+    )
 
     await call.message.edit_text(
-        t("ask_actor_name", lang),
+        t(
+            "ask_actor_name",
+            lang,
+        ),
         reply_markup=back_kb(lang),
     )
 
-    await state.set_state(TextSearch.actor)
+    await state.set_state(
+        TextSearch.actor
+    )
 
     await call.answer()
 
 
-@router.message(TextSearch.actor)
+@router.message(
+    TextSearch.actor
+)
 async def do_actor_search(
     message: Message,
     state: FSMContext,
 ):
-    lang = lang_of(message.from_user.id)
+
+    user = message.from_user
+
+    if user is None:
+        return
+
+    await track_user(user)
+
+    await track_search(
+        user.id,
+        "actor",
+    )
+
+    lang = lang_of(
+        user.id
+    )
 
     name = message.text.strip().lower()
 
-    result = ACTORS.get(name)
+    result = ACTORS.get(
+        name
+    )
 
     if not result and TMDB_API_KEY:
+
         result = await _tmdb_person_credits(
             message.text.strip(),
             lang,
         )
 
     if result:
+
         title = (
-            f"🎭 <b>{message.text.strip()}</b> — Top 10:\n\n"
+            f"🎭 <b>{message.text.strip()}</b> "
+            f"— Top 10:\n\n"
         )
 
         await message.answer(
@@ -569,8 +922,12 @@ async def do_actor_search(
         )
 
     else:
+
         await message.answer(
-            t("not_found_local", lang),
+            t(
+                "not_found_local",
+                lang,
+            ),
             reply_markup=back_kb(lang),
         )
 
@@ -581,43 +938,84 @@ async def do_actor_search(
 # DIRECTOR
 # ============================================================
 
-@router.callback_query(F.data == "menu:director")
+@router.callback_query(
+    F.data == "menu:director"
+)
 async def ask_director(
     call: CallbackQuery,
     state: FSMContext,
 ):
-    lang = lang_of(call.from_user.id)
+
+    user = call.from_user
+
+    await track_user(user)
+
+    await track_usage(
+        user.id,
+        "director_menu",
+    )
+
+    lang = lang_of(
+        user.id
+    )
 
     await call.message.edit_text(
-        t("ask_director_name", lang),
+        t(
+            "ask_director_name",
+            lang,
+        ),
         reply_markup=back_kb(lang),
     )
 
-    await state.set_state(TextSearch.director)
+    await state.set_state(
+        TextSearch.director
+    )
 
     await call.answer()
 
 
-@router.message(TextSearch.director)
+@router.message(
+    TextSearch.director
+)
 async def do_director_search(
     message: Message,
     state: FSMContext,
 ):
-    lang = lang_of(message.from_user.id)
+
+    user = message.from_user
+
+    if user is None:
+        return
+
+    await track_user(user)
+
+    await track_search(
+        user.id,
+        "director",
+    )
+
+    lang = lang_of(
+        user.id
+    )
 
     name = message.text.strip().lower()
 
-    result = DIRECTORS.get(name)
+    result = DIRECTORS.get(
+        name
+    )
 
     if not result and TMDB_API_KEY:
+
         result = await _tmdb_person_credits(
             message.text.strip(),
             lang,
         )
 
     if result:
+
         title = (
-            f"🎬 <b>{message.text.strip()}</b> — Top 10:\n\n"
+            f"🎬 <b>{message.text.strip()}</b> "
+            f"— Top 10:\n\n"
         )
 
         await message.answer(
@@ -630,8 +1028,12 @@ async def do_director_search(
         )
 
     else:
+
         await message.answer(
-            t("not_found_local", lang),
+            t(
+                "not_found_local",
+                lang,
+            ),
             reply_markup=back_kb(lang),
         )
 
@@ -639,32 +1041,68 @@ async def do_director_search(
 
 
 # ============================================================
-# COMPARE
+# COMPARE MOVIE
 # ============================================================
 
-@router.callback_query(F.data == "menu:compare")
+@router.callback_query(
+    F.data == "menu:compare"
+)
 async def ask_compare(
     call: CallbackQuery,
     state: FSMContext,
 ):
-    lang = lang_of(call.from_user.id)
+
+    user = call.from_user
+
+    await track_user(user)
+
+    await track_usage(
+        user.id,
+        "compare_menu",
+    )
+
+    lang = lang_of(
+        user.id
+    )
 
     await call.message.edit_text(
-        t("ask_movie_name", lang),
+        t(
+            "ask_movie_name",
+            lang,
+        ),
         reply_markup=back_kb(lang),
     )
 
-    await state.set_state(TextSearch.movie)
+    await state.set_state(
+        TextSearch.movie
+    )
 
     await call.answer()
 
 
-@router.message(TextSearch.movie)
+@router.message(
+    TextSearch.movie
+)
 async def do_compare(
     message: Message,
     state: FSMContext,
 ):
-    lang = lang_of(message.from_user.id)
+
+    user = message.from_user
+
+    if user is None:
+        return
+
+    await track_user(user)
+
+    await track_search(
+        user.id,
+        "movie_compare",
+    )
+
+    lang = lang_of(
+        user.id
+    )
 
     query = message.text.strip()
 
@@ -675,17 +1113,23 @@ async def do_compare(
     found_locally = False
 
     for r in IMDB_TOP:
+
         if r[1].lower() == query.lower():
+
             imdb = r[4]
             rt = r[5]
             meta = r[6]
 
             found_locally = True
+
             break
 
     if not found_locally and OMDB_API_KEY:
+
         try:
+
             async with aiohttp.ClientSession() as session:
+
                 url = (
                     "http://www.omdbapi.com/"
                     f"?apikey={OMDB_API_KEY}"
@@ -696,27 +1140,45 @@ async def do_compare(
                     url,
                     timeout=10,
                 ) as response:
+
                     data = await response.json()
 
-            if data.get("Response") == "True":
+            if data.get(
+                "Response"
+            ) == "True":
 
                 for source in data.get(
                     "Ratings",
                     [],
                 ):
+
                     if source["Source"] == "Internet Movie Database":
-                        imdb = source["Value"].split("/")[0]
+
+                        imdb = source[
+                            "Value"
+                        ].split(
+                            "/"
+                        )[0]
 
                     elif source["Source"] == "Rotten Tomatoes":
-                        rt = source["Value"].replace(
+
+                        rt = source[
+                            "Value"
+                        ].replace(
                             "%",
                             "",
                         )
 
                     elif source["Source"] == "Metacritic":
-                        meta = source["Value"].split("/")[0]
+
+                        meta = source[
+                            "Value"
+                        ].split(
+                            "/"
+                        )[0]
 
         except Exception:
+
             logger.exception(
                 "OMDb request failed"
             )
@@ -727,11 +1189,18 @@ async def do_compare(
         title=query,
     )
 
-    if imdb is None and rt is None and meta is None:
+    if (
+        imdb is None
+        and rt is None
+        and meta is None
+    ):
 
         await message.answer(
             header
-            + t("not_found_local", lang),
+            + t(
+                "not_found_local",
+                lang,
+            ),
             reply_markup=back_kb(lang),
         )
 
@@ -755,26 +1224,52 @@ async def do_compare(
 # SMART RECOMMENDATION QUIZ
 # ============================================================
 
-@router.callback_query(F.data == "menu:recommend")
+@router.callback_query(
+    F.data == "menu:recommend"
+)
 async def start_quiz(
     call: CallbackQuery,
     state: FSMContext,
 ):
-    lang = lang_of(call.from_user.id)
+
+    user = call.from_user
+
+    await track_user(user)
+
+    await track_usage(
+        user.id,
+        "recommendation_quiz",
+    )
+
+    lang = lang_of(
+        user.id
+    )
 
     await call.message.edit_text(
-        t("start_quiz", lang)
+        t(
+            "start_quiz",
+            lang,
+        )
     )
 
     await call.message.answer(
-        t("q_mood", lang),
+        t(
+            "q_mood",
+            lang,
+        ),
         reply_markup=mood_kb(lang),
     )
 
-    await state.set_state(Quiz.mood)
+    await state.set_state(
+        Quiz.mood
+    )
 
     await call.answer()
 
+
+# ============================================================
+# QUIZ MOOD
+# ============================================================
 
 @router.callback_query(
     Quiz.mood,
@@ -784,21 +1279,45 @@ async def quiz_mood(
     call: CallbackQuery,
     state: FSMContext,
 ):
-    lang = lang_of(call.from_user.id)
+
+    user = call.from_user
+
+    await track_user(user)
+
+    await track_usage(
+        user.id,
+        "quiz_mood",
+    )
+
+    lang = lang_of(
+        user.id
+    )
 
     await state.update_data(
-        mood=call.data.split(":", 1)[1]
+        mood=call.data.split(
+            ":",
+            1,
+        )[1]
     )
 
     await call.message.edit_text(
-        t("q_genre", lang),
+        t(
+            "q_genre",
+            lang,
+        ),
         reply_markup=quiz_genre_kb(lang),
     )
 
-    await state.set_state(Quiz.genre)
+    await state.set_state(
+        Quiz.genre
+    )
 
     await call.answer()
 
+
+# ============================================================
+# QUIZ GENRE
+# ============================================================
 
 @router.callback_query(
     Quiz.genre,
@@ -808,21 +1327,45 @@ async def quiz_genre(
     call: CallbackQuery,
     state: FSMContext,
 ):
-    lang = lang_of(call.from_user.id)
+
+    user = call.from_user
+
+    await track_user(user)
+
+    await track_usage(
+        user.id,
+        "quiz_genre",
+    )
+
+    lang = lang_of(
+        user.id
+    )
 
     await state.update_data(
-        genre=call.data.split(":", 1)[1]
+        genre=call.data.split(
+            ":",
+            1,
+        )[1]
     )
 
     await call.message.edit_text(
-        t("q_mbti", lang),
+        t(
+            "q_mbti",
+            lang,
+        ),
         reply_markup=mbti_kb(lang),
     )
 
-    await state.set_state(Quiz.mbti)
+    await state.set_state(
+        Quiz.mbti
+    )
 
     await call.answer()
 
+
+# ============================================================
+# QUIZ MBTI
+# ============================================================
 
 @router.callback_query(
     Quiz.mbti,
@@ -832,27 +1375,68 @@ async def quiz_mbti(
     call: CallbackQuery,
     state: FSMContext,
 ):
-    lang = lang_of(call.from_user.id)
+
+    user = call.from_user
+
+    await track_user(user)
+
+    await track_usage(
+        user.id,
+        "quiz_mbti",
+    )
+
+    lang = lang_of(
+        user.id
+    )
 
     await state.update_data(
-        mbti=call.data.split(":", 1)[1]
+        mbti=call.data.split(
+            ":",
+            1,
+        )[1]
     )
 
     await call.message.edit_text(
-        t("q_liked", lang)
+        t(
+            "q_liked",
+            lang,
+        )
     )
 
-    await state.set_state(Quiz.liked)
+    await state.set_state(
+        Quiz.liked
+    )
 
     await call.answer()
 
 
-@router.message(Quiz.liked)
+# ============================================================
+# QUIZ LIKED
+# ============================================================
+
+@router.message(
+    Quiz.liked
+)
 async def quiz_liked(
     message: Message,
     state: FSMContext,
 ):
-    lang = lang_of(message.from_user.id)
+
+    user = message.from_user
+
+    if user is None:
+        return
+
+    await track_user(user)
+
+    await track_usage(
+        user.id,
+        "quiz_liked",
+    )
+
+    lang = lang_of(
+        user.id
+    )
 
     text = message.text.strip()
 
@@ -870,7 +1454,10 @@ async def quiz_liked(
     )
 
     await message.answer(
-        t("q_disliked", lang)
+        t(
+            "q_disliked",
+            lang,
+        )
     )
 
     await state.set_state(
@@ -878,12 +1465,33 @@ async def quiz_liked(
     )
 
 
-@router.message(Quiz.disliked)
+# ============================================================
+# QUIZ DISLIKED
+# ============================================================
+
+@router.message(
+    Quiz.disliked
+)
 async def quiz_disliked(
     message: Message,
     state: FSMContext,
 ):
-    lang = lang_of(message.from_user.id)
+
+    user = message.from_user
+
+    if user is None:
+        return
+
+    await track_user(user)
+
+    await track_usage(
+        user.id,
+        "quiz_disliked",
+    )
+
+    lang = lang_of(
+        user.id
+    )
 
     text = message.text.strip()
 
@@ -897,16 +1505,28 @@ async def quiz_disliked(
     )
 
     await message.answer(
-        t("analyzing", lang)
+        t(
+            "analyzing",
+            lang,
+        )
     )
 
     data = await state.get_data()
 
     results = recommend(
-        genre_pref=data.get("genre"),
-        mood=data.get("mood"),
-        mbti=data.get("mbti"),
-        liked_titles=data.get("liked", []),
+        genre_pref=data.get(
+            "genre"
+        ),
+        mood=data.get(
+            "mood"
+        ),
+        mbti=data.get(
+            "mbti"
+        ),
+        liked_titles=data.get(
+            "liked",
+            [],
+        ),
         disliked_titles=disliked,
         top_n=6,
     )
@@ -917,6 +1537,7 @@ async def quiz_disliked(
         results,
         1,
     ):
+
         rt_s = (
             f"{item['rt']}%"
             if item["rt"] is not None
@@ -939,7 +1560,10 @@ async def quiz_disliked(
         )
 
     await message.answer(
-        t("recommend_header", lang)
+        t(
+            "recommend_header",
+            lang,
+        )
         + "\n\n"
         + "\n\n".join(lines),
         reply_markup=back_kb(lang),
@@ -954,26 +1578,66 @@ async def quiz_disliked(
 
 async def main():
 
-    if not BOT_TOKEN or ":" not in BOT_TOKEN:
+    # --------------------------------------------------------
+    # Validate BOT TOKEN
+    # --------------------------------------------------------
+
+    if (
+        not BOT_TOKEN
+        or ":" not in BOT_TOKEN
+    ):
+
         raise SystemExit(
             "BOT_TOKEN is missing/invalid. "
             "Set BOT_TOKEN in Render Environment Variables."
         )
 
-    logger.info("Starting bot...")
+    # --------------------------------------------------------
+    # Initialize admin database
+    # --------------------------------------------------------
+
+    init_admin_db()
+
+    logger.info(
+        "Admin database initialized."
+    )
+
+    # --------------------------------------------------------
+    # Create Bot
+    # --------------------------------------------------------
 
     bot = Bot(
         token=BOT_TOKEN
     )
 
+    # --------------------------------------------------------
+    # Dispatcher
+    # --------------------------------------------------------
+
     dp = Dispatcher(
         storage=MemoryStorage()
     )
 
-    dp.include_router(router)
+    # --------------------------------------------------------
+    # Main MovieBot Router
+    # --------------------------------------------------------
 
-    # Remove webhook so polling can work.
-    # Do NOT delete pending updates.
+    dp.include_router(
+        router
+    )
+
+    # --------------------------------------------------------
+    # Admin Router
+    # --------------------------------------------------------
+
+    dp.include_router(
+        admin_router
+    )
+
+    # --------------------------------------------------------
+    # Remove webhook
+    # --------------------------------------------------------
+
     await bot.delete_webhook(
         drop_pending_updates=False
     )
@@ -983,12 +1647,14 @@ async def main():
     )
 
     try:
+
         await dp.start_polling(
             bot,
             allowed_updates=dp.resolve_used_update_types(),
         )
 
     finally:
+
         await bot.session.close()
 
 
@@ -998,14 +1664,18 @@ async def main():
 
 if __name__ == "__main__":
 
-    # Start Flask health server first.
+    # Start Render health server
     keep_alive()
 
-    # Start Telegram polling.
+    # Start Telegram bot
     try:
-        asyncio.run(main())
+
+        asyncio.run(
+            main()
+        )
 
     except KeyboardInterrupt:
+
         logger.info(
             "Bot stopped manually."
-      )
+    )
