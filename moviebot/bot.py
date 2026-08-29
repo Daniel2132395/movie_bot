@@ -1,5 +1,5 @@
 # ============================================================
-# MovieBot - نسخه نهایی با TMDB API
+# MovieBot - نسخه کامل با دانلود و تماشا
 # aiogram 3.x
 # ============================================================
 
@@ -40,6 +40,9 @@ from keyboards import (
     search_watch_kb,
     search_results_kb,
     movie_result_kb,
+    movie_actions_kb,
+    download_links_kb,
+    watch_links_kb,
     region_kb,
 )
 
@@ -53,6 +56,8 @@ from providers import (
     providers_text,
     movie_text,
 )
+
+from download_links import search_download_links, search_watch_links
 
 from admin import admin_router
 from tmdb_provider import search_tmdb, TMDB_API_KEY
@@ -275,7 +280,7 @@ async def set_region(call: CallbackQuery):
 async def search_watch_center(call: CallbackQuery):
     user_id = call.from_user.id
     await call.message.edit_text(
-        "🎬 <b>جستجو و تماشای فیلم</b>\n━━━━━━━━━━━━━━━━\n\nنام فیلم یا سریال را وارد کن.\n\nمثال:\n🎬 Breaking Bad\n🎬 Interstellar\n📺 Dark\n\n🔎 جستجو با TMDB API انجام می‌شود.",
+        "🎬 <b>جستجو و تماشای فیلم</b>\n━━━━━━━━━━━━━━━━\n\nنام فیلم یا سریال را وارد کن.\n\nمثال:\n🎬 Breaking Bad\n🎬 Interstellar\n📺 Dark\n\n🔎 جستجو با TMDB انجام می‌شود.\n📥 لینک دانلود و تماشا آنلاین نیز نمایش داده می‌شود.",
         reply_markup=search_watch_kb(lang_of(user_id)),
     )
     await call.answer()
@@ -308,30 +313,50 @@ async def perform_movie_search(query: str, user_id: int):
         return []
 
     results = []
+    seen_titles = set()
     
     # 1. جستجوی توی دیتابیس محلی
     local_results = search_local_movies(query)
     if local_results:
-        for i, item in enumerate(local_results):
-            results.append({
-                "id": item.get("tmdb_id", i + 1),
-                "title": item.get("title", query),
-                "name": item.get("title", query),
-                "original_title": item.get("original_title", query),
-                "_media_type": "movie",
-                "provider_id": "local",
-                "provider_name": "📚 دیتابیس داخلی",
-                "provider_url": "",
-                "url": "",
-                "release_date": str(item.get("year", "")),
-                "vote_average": item.get("vote_average", 0),
-                "overview": item.get("overview", "اطلاعات بیشتری در دیتابیس موجود نیست."),
-            })
+        for item in local_results:
+            title = item.get("title", query)
+            if title.lower() not in seen_titles:
+                seen_titles.add(title.lower())
+                results.append({
+                    "id": item.get("tmdb_id", len(results) + 1),
+                    "title": title,
+                    "name": title,
+                    "original_title": item.get("original_title", query),
+                    "_media_type": "movie",
+                    "provider_id": "local",
+                    "provider_name": "📚 دیتابیس داخلی",
+                    "provider_url": "",
+                    "url": "",
+                    "release_date": str(item.get("year", "")),
+                    "vote_average": item.get("vote_average", 0),
+                    "overview": item.get("overview", "اطلاعات بیشتری در دیتابیس موجود نیست."),
+                })
     
     # 2. جستجوی TMDB (اگه کلید داشته باشیم)
     if TMDB_API_KEY:
         tmdb_results = await search_tmdb(query)
-        results.extend(tmdb_results)
+        for item in tmdb_results:
+            title = item.get("title", query)
+            if title.lower() not in seen_titles:
+                seen_titles.add(title.lower())
+                results.append(item)
+    
+    # 3. جستجوی سرویس‌های ایرانی
+    if not results:
+        try:
+            iranian_results = await search_movies(query=query, language=language_code(user_id), limit=10)
+            for item in iranian_results:
+                title = item.get("title", query)
+                if title.lower() not in seen_titles:
+                    seen_titles.add(title.lower())
+                    results.append(item)
+        except Exception as e:
+            logger.error(f"Iranian providers error: {e}")
     
     return results
 
@@ -344,7 +369,7 @@ async def movie_search(message: Message, state: FSMContext):
         return
 
     status_message = await message.answer(
-        f"🔎 <b>در حال جستجو...</b>\n\n🎬 <code>{clean(query)}</code>\n\n🌐 در حال جستجو در TMDB..."
+        f"🔎 <b>در حال جستجو...</b>\n\n🎬 <code>{clean(query)}</code>\n\n🌐 در حال جستجو در TMDB و منابع دیگر..."
     )
 
     try:
@@ -393,115 +418,146 @@ async def provider_select(call: CallbackQuery):
         await call.message.answer("⚠️ عنوان جستجو قابل تشخیص نیست.")
         return
 
-    # TMDB result - نمایش جزئیات کامل
-    if provider_id == "tmdb":
-        # دریافت جزئیات از TMDB
-        if TMDB_API_KEY:
-            try:
-                async with aiohttp.ClientSession() as session:
-                    # جستجو برای پیدا کردن ID دقیق
-                    url = "https://api.themoviedb.org/3/search/multi"
-                    params = {
-                        "api_key": TMDB_API_KEY,
-                        "query": query,
-                        "language": "fa-IR",
-                    }
-                    
-                    async with session.get(url, params=params, timeout=15) as response:
-                        data = await response.json()
-                        
-                        if data.get("results"):
-                            item = data.get("results")[0]
-                            media_type = item.get("media_type")
-                            item_id = item.get("id")
-                            
-                            # دریافت جزئیات کامل
-                            detail_url = f"https://api.themoviedb.org/3/{media_type}/{item_id}"
-                            detail_params = {
-                                "api_key": TMDB_API_KEY,
-                                "language": "fa-IR",
-                            }
-                            
-                            async with session.get(detail_url, params=detail_params, timeout=15) as detail_response:
-                                detail = await detail_response.json()
-                                
-                                title = detail.get("title") or detail.get("name") or query
-                                year = (detail.get("release_date") or detail.get("first_air_date") or "")[:4]
-                                overview = detail.get("overview", "اطلاعاتی موجود نیست.")
-                                genres = [g.get("name") for g in detail.get("genres", [])[:3]]
-                                genres_text = ", ".join(genres) if genres else "نامشخص"
-                                vote = detail.get("vote_average", 0)
-                                poster = detail.get("poster_path", "")
-                                
-                                text = f"🎬 <b>{clean(title)}</b> ({year})\n━━━━━━━━━━━━━━━━\n\n"
-                                text += f"🎭 ژانر: {clean(genres_text)}\n"
-                                text += f"⭐ امتیاز: {vote}/10\n\n"
-                                text += f"📝 {clean(overview)}"
-                                
-                                await call.message.edit_text(
-                                    text,
-                                    reply_markup=movie_result_kb(
-                                        "tmdb",
-                                        f"https://www.themoviedb.org/{media_type}/{item_id}",
-                                        query
-                                    ),
-                                )
-                                await call.answer()
-                                return
-            except Exception as e:
-                logger.error(f"TMDB detail error: {e}")
-        
-        # Fallback
-        await call.message.edit_text(
-            f"🎬 <b>{clean(query)}</b>\n━━━━━━━━━━━━━━━━\n\n🎬 منبع: TMDB\n\n🔗 برای مشاهده جزئیات بیشتر روی دکمه زیر کلیک کن:",
-            reply_markup=movie_result_kb(
-                "tmdb",
-                f"https://www.themoviedb.org/search?query={query.replace(' ', '+')}",
-                query
-            ),
+    # نمایش دکمه‌های اقدامات (دانلود و تماشا)
+    await call.message.edit_text(
+        f"🎬 <b>{clean(query)}</b>\n━━━━━━━━━━━━━━━━\n\n"
+        "🔽 برای دریافت لینک‌های دانلود و تماشا، از دکمه‌های زیر استفاده کن:\n\n"
+        "📥 لینک‌های دانلود از سایت‌های معتبر\n"
+        "▶️ لینک‌های تماشا آنلاین از سرویس‌های مختلف",
+        reply_markup=movie_actions_kb(query)
+    )
+    await call.answer()
+
+
+# ============================================================
+# DOWNLOAD LINKS
+# ============================================================
+
+@router.callback_query(F.data.startswith("download:"))
+async def show_download_links(call: CallbackQuery):
+    query = call.data.split(":", 1)[1]
+    
+    status_msg = await call.message.edit_text(
+        f"🔍 <b>در حال جستجوی لینک‌های دانلود...</b>\n\n🎬 {clean(query)}\n\n⏳ لطفاً چند لحظه صبر کن..."
+    )
+    
+    links = await search_download_links(query)
+    
+    if not links:
+        await status_msg.edit_text(
+            f"😕 <b>لینک دانلودی پیدا نشد</b>\n━━━━━━━━━━━━━━━━\n\n🎬 {clean(query)}\n\n💡 نکات:\n• ممکن است فیلم هنوز در سرویس‌ها قرار نگرفته باشد\n• با عنوان انگلیسی امتحان کن\n• از سایت‌های معتبر دانلود فیلم دیدن کن",
+            reply_markup=back_kb(lang_of(call.from_user.id))
         )
         await call.answer()
         return
     
-    # Local database result
-    if provider_id == "local":
-        local_results = search_local_movies(query)
-        if local_results:
-            item = local_results[0]
-            await call.message.edit_text(
-                f"🎬 <b>{clean(item.get('title', query))}</b>\n━━━━━━━━━━━━━━━━\n\n"
-                f"📅 سال: {item.get('year', 'نامشخص')}\n"
-                f"📚 منبع: دیتابیس داخلی\n\n"
-                f"📝 {clean(item.get('overview', 'اطلاعات بیشتری موجود نیست.'))}",
-                reply_markup=movie_result_kb("local", "", query),
-            )
-            await call.answer()
-            return
+    text = f"📥 <b>لینک‌های دانلود</b>\n━━━━━━━━━━━━━━━━\n\n🎬 {clean(query)}\n\n📊 {len(links)} لینک پیدا شد:\n\n"
     
-    # Iranian providers
-    results = await get_provider_results(query)
-    selected = None
-    for item in results:
-        if item.get("provider_id") == provider_id:
-            selected = item
-            break
-
-    if not selected:
-        await call.message.answer("⚠️ سرویس موردنظر پیدا نشد.")
-        return
-
-    name = clean(selected.get("provider_name", "سرویس"))
-    url = selected.get("url")
-
-    if not url:
-        await call.message.answer("⚠️ لینک سرویس موجود نیست.")
-        return
-
-    text = f"🎬 <b>نتیجه جستجو</b>\n━━━━━━━━━━━━━━━━\n\n🔎 عنوان: <b>{clean(query)}</b>\n\n🇮🇷 سرویس: <b>{name}</b>\n\nبرای مشاهده نتیجه، روی دکمه زیر بزن:"
-
-    await call.message.edit_text(
+    await status_msg.edit_text(
         text,
-        reply_markup=movie_result_kb(provider_id, url, query),
+        reply_markup=download_links_kb(links, query)
+    )
+    await call.answer(f"{len(links)} لینک دانلود پیدا شد ✅")
+
+
+# ============================================================
+# WATCH ONLINE LINKS
+# ============================================================
+
+@router.callback_query(F.data.startswith("watch_online:"))
+async def show_watch_links(call: CallbackQuery):
+    query = call.data.split(":", 1)[1]
+    
+    status_msg = await call.message.edit_text(
+        f"🔍 <b>در حال جستجوی لینک‌های تماشا آنلاین...</b>\n\n🎬 {clean(query)}\n\n⏳ لطفاً چند لحظه صبر کن..."
+    )
+    
+    links = await search_watch_links(query)
+    
+    if not links:
+        await status_msg.edit_text(
+            f"😕 <b>لینک تماشایی پیدا نشد</b>\n━━━━━━━━━━━━━━━━\n\n🎬 {clean(query)}\n\n💡 نکات:\n• ممکن است فیلم هنوز در سرویس‌ها قرار نگرفته باشد\n• با عنوان انگلیسی امتحان کن\n• از سرویس‌های معتبر تماشا فیلم دیدن کن",
+            reply_markup=back_kb(lang_of(call.from_user.id))
+        )
+        await call.answer()
+        return
+    
+    text = f"▶️ <b>لینک‌های تماشا آنلاین</b>\n━━━━━━━━━━━━━━━━\n\n🎬 {clean(query)}\n\n📊 {len(links)} لینک پیدا شد:\n\n"
+    
+    await status_msg.edit_text(
+        text,
+        reply_markup=watch_links_kb(links, query)
+    )
+    await call.answer(f"{len(links)} لینک تماشا پیدا شد ✅")
+
+
+# ============================================================
+# MOVIE INFO
+# ============================================================
+
+@router.callback_query(F.data.startswith("info:"))
+async def show_movie_info(call: CallbackQuery):
+    query = call.data.split(":", 1)[1]
+    
+    # دریافت اطلاعات از TMDB
+    if TMDB_API_KEY:
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = "https://api.themoviedb.org/3/search/multi"
+                params = {
+                    "api_key": TMDB_API_KEY,
+                    "query": query,
+                    "language": "fa-IR",
+                }
+                
+                async with session.get(url, params=params, timeout=15) as response:
+                    data = await response.json()
+                    
+                    if data.get("results"):
+                        item = data.get("results")[0]
+                        media_type = item.get("media_type")
+                        item_id = item.get("id")
+                        
+                        detail_url = f"https://api.themoviedb.org/3/{media_type}/{item_id}"
+                        detail_params = {
+                            "api_key": TMDB_API_KEY,
+                            "language": "fa-IR",
+                        }
+                        
+                        async with session.get(detail_url, params=detail_params, timeout=15) as detail_response:
+                            detail = await detail_response.json()
+                            
+                            title = detail.get("title") or detail.get("name") or query
+                            year = (detail.get("release_date") or detail.get("first_air_date") or "")[:4]
+                            overview = detail.get("overview", "اطلاعاتی موجود نیست.")
+                            genres = [g.get("name") for g in detail.get("genres", [])[:3]]
+                            genres_text = ", ".join(genres) if genres else "نامشخص"
+                            vote = detail.get("vote_average", 0)
+                            poster = detail.get("poster_path", "")
+                            imdb_id = detail.get("imdb_id", "")
+                            
+                            text = f"🎬 <b>{clean(title)}</b> ({year})\n━━━━━━━━━━━━━━━━\n\n"
+                            text += f"🎭 ژانر: {clean(genres_text)}\n"
+                            text += f"⭐ امتیاز: {vote}/10\n"
+                            if imdb_id:
+                                text += f"🎬 IMDb: https://www.imdb.com/title/{imdb_id}/\n"
+                            text += f"\n📝 {clean(overview)}\n\n"
+                            text += "🔽 برای دریافت لینک‌ها از دکمه‌های زیر استفاده کن:"
+                            
+                            await call.message.edit_text(
+                                text,
+                                reply_markup=movie_actions_kb(query)
+                            )
+                            await call.answer()
+                            return
+        except Exception as e:
+            logger.error(f"TMDB info error: {e}")
+    
+    # Fallback
+    await call.message.edit_text(
+        f"🎬 <b>{clean(query)}</b>\n━━━━━━━━━━━━━━━━\n\n"
+        "🔽 برای دریافت لینک‌های دانلود و تماشا، از دکمه‌های زیر استفاده کن:",
+        reply_markup=movie_actions_kb(query)
     )
     await call.answer()
 
@@ -840,7 +896,7 @@ async def main():
     dp.include_router(admin_router)  # Admin router
 
     await bot.delete_webhook(drop_pending_updates=False)
-    logger.info("MovieBot started with TMDB API.")
+    logger.info("MovieBot started with TMDB API + Download Links.")
 
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
