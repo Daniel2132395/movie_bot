@@ -1,20 +1,43 @@
 # providers.py
 # ============================================================
-# MovieBot — Official Iranian Provider Search
-# بدون TMDb برای جستجوی سرویس‌ها
-# بدون استخراج فایل ویدئو
+# MovieBot — Iranian Provider Search
+# جستجوی واقعی صفحات سرویس‌ها
+# بدون TMDb
+# بدون استخراج MP4 / M3U8 / MPD
 # ============================================================
 
+import asyncio
 import logging
+import re
 from html import escape
 from typing import Optional
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urljoin
 
 import aiohttp
+from bs4 import BeautifulSoup
 
 logger = logging.getLogger("MovieBot.providers")
 
-TIMEOUT = aiohttp.ClientTimeout(total=12)
+TIMEOUT = aiohttp.ClientTimeout(
+    total=15,
+    connect=8,
+    sock_read=12,
+)
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 "
+        "(KHTML, like Gecko) "
+        "Chrome/131.0 Safari/537.36"
+    ),
+    "Accept-Language": "fa-IR,fa;q=0.9,en;q=0.8",
+}
+
+
+# ============================================================
+# PROVIDERS
+# ============================================================
 
 OFFICIAL_PROVIDERS = {
     "filimo": {
@@ -23,24 +46,28 @@ OFFICIAL_PROVIDERS = {
         "search_url": "https://www.filimo.com/search?q={query}",
         "home_url": "https://www.filimo.com/",
     },
+
     "namava": {
         "name": "نماوا",
         "domain": "namava.ir",
         "search_url": "https://www.namava.ir/search?search={query}",
         "home_url": "https://www.namava.ir/",
     },
+
     "filmnet": {
         "name": "فیلم‌نت",
         "domain": "filmnet.ir",
         "search_url": "https://filmnet.ir/search/{query}",
         "home_url": "https://filmnet.ir/",
     },
+
     "tamasha": {
         "name": "تماشا",
         "domain": "tamasha.com",
         "search_url": "https://www.tamasha.com/search?term={query}",
         "home_url": "https://www.tamasha.com/",
     },
+
     "aparat": {
         "name": "آپارات",
         "domain": "aparat.com",
@@ -50,12 +77,136 @@ OFFICIAL_PROVIDERS = {
 }
 
 
+# ============================================================
+# TEXT NORMALIZATION
+# ============================================================
+
+def normalize_text(value: str) -> str:
+    if not value:
+        return ""
+
+    value = str(value)
+
+    # Arabic → Persian
+    value = value.replace("ي", "ی")
+    value = value.replace("ى", "ی")
+    value = value.replace("ك", "ک")
+
+    # Persian/Arabic digits → English
+    table = str.maketrans(
+        "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩",
+        "01234567890123456789",
+    )
+
+    value = value.translate(table)
+
+    # Remove extra spaces
+    value = re.sub(r"\s+", " ", value)
+
+    return value.strip().lower()
+
+
+def title_matches(query: str, title: str) -> bool:
+    q = normalize_text(query)
+    t = normalize_text(title)
+
+    if not q or not t:
+        return False
+
+    if q in t:
+        return True
+
+    # برای جستجوهای چندکلمه‌ای
+    q_words = [
+        x for x in q.split()
+        if len(x) >= 2
+    ]
+
+    if not q_words:
+        return False
+
+    matched = sum(
+        1
+        for word in q_words
+        if word in t
+    )
+
+    return matched >= max(
+        1,
+        len(q_words) // 2,
+    )
+
+
+# ============================================================
+# HTTP
+# ============================================================
+
+async def _get_text(
+    session: aiohttp.ClientSession,
+    url: str,
+) -> Optional[str]:
+
+    try:
+        async with session.get(
+            url,
+            headers=HEADERS,
+            allow_redirects=True,
+        ) as response:
+
+            logger.info(
+                "GET %s -> HTTP %s",
+                url,
+                response.status,
+            )
+
+            if response.status != 200:
+                return None
+
+            content_type = (
+                response.headers.get(
+                    "Content-Type",
+                    "",
+                )
+                .lower()
+            )
+
+            if (
+                "text/html" not in content_type
+                and "application/xhtml" not in content_type
+            ):
+                return None
+
+            return await response.text(
+                errors="ignore"
+            )
+
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Timeout: %s",
+            url,
+        )
+        return None
+
+    except Exception:
+        logger.exception(
+            "Request failed: %s",
+            url,
+        )
+        return None
+
+
+# ============================================================
+# SEARCH URL
+# ============================================================
+
 def provider_search_url(
     provider_key: str,
     query: str,
 ) -> Optional[str]:
 
-    provider = OFFICIAL_PROVIDERS.get(provider_key)
+    provider = OFFICIAL_PROVIDERS.get(
+        provider_key
+    )
 
     if not provider:
         return None
@@ -72,70 +223,366 @@ def provider_search_url(
     )
 
 
-def _result(
-    key: str,
+# ============================================================
+# LINK VALIDATION
+# ============================================================
+
+def _is_provider_link(
+    provider: dict,
+    url: str,
+) -> bool:
+
+    if not url:
+        return False
+
+    domain = provider["domain"].lower()
+
+    url_lower = url.lower()
+
+    return (
+        domain in url_lower
+        and url_lower.startswith("http")
+    )
+
+
+# ============================================================
+# EXTRACT LINKS FROM HTML
+# ============================================================
+
+def _extract_links(
+    provider_key: str,
+    query: str,
+    html: str,
+):
+    provider = OFFICIAL_PROVIDERS[
+        provider_key
+    ]
+
+    soup = BeautifulSoup(
+        html,
+        "html.parser",
+    )
+
+    results = []
+    seen = set()
+
+    query_normalized = normalize_text(
+        query
+    )
+
+    # تمام لینک‌های صفحه
+    for a in soup.find_all("a", href=True):
+
+        href = a.get("href", "").strip()
+
+        if not href:
+            continue
+
+        url = urljoin(
+            provider["home_url"],
+            href,
+        )
+
+        if not _is_provider_link(
+            provider,
+            url,
+        ):
+            continue
+
+        # حذف لینک‌های عمومی
+        lower_url = url.lower()
+
+        ignored = (
+            "/search",
+            "/login",
+            "/register",
+            "/account",
+            "/privacy",
+            "/terms",
+            "/contact",
+        )
+
+        if any(
+            part in lower_url
+            for part in ignored
+        ):
+            continue
+
+        text = a.get_text(
+            " ",
+            strip=True,
+        )
+
+        title = (
+            text
+            or a.get("title")
+            or ""
+        )
+
+        title = re.sub(
+            r"\s+",
+            " ",
+            title,
+        ).strip()
+
+        if not title:
+            continue
+
+        # اگر متن لینک با عنوان موردنظر ارتباط ندارد
+        if not title_matches(
+            query_normalized,
+            title,
+        ):
+            continue
+
+        key = url.rstrip("/")
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+
+        results.append({
+            "title": title[:200],
+            "url": url,
+            "provider_id": provider_key,
+            "provider_name": provider["name"],
+        })
+
+        if len(results) >= 10:
+            break
+
+    return results
+
+
+# ============================================================
+# JSON-LD EXTRACTION
+# ============================================================
+
+def _extract_jsonld(
+    provider_key: str,
+    query: str,
+    html: str,
+):
+    provider = OFFICIAL_PROVIDERS[
+        provider_key
+    ]
+
+    soup = BeautifulSoup(
+        html,
+        "html.parser",
+    )
+
+    results = []
+
+    for script in soup.find_all(
+        "script",
+        type="application/ld+json",
+    ):
+
+        raw = script.string
+
+        if not raw:
+            continue
+
+        # این قسمت عمداً بدون اجرای JS است.
+        # JSON-LD فقط برای پیدا کردن عنوان/URL است.
+
+        import json
+
+        try:
+            data = json.loads(raw)
+        except Exception:
+            continue
+
+        objects = []
+
+        if isinstance(data, list):
+            objects.extend(data)
+
+        elif isinstance(data, dict):
+
+            if "@graph" in data:
+                graph = data["@graph"]
+
+                if isinstance(
+                    graph,
+                    list,
+                ):
+                    objects.extend(graph)
+
+            objects.append(data)
+
+        for item in objects:
+
+            if not isinstance(
+                item,
+                dict,
+            ):
+                continue
+
+            title = (
+                item.get("name")
+                or item.get("headline")
+                or ""
+            )
+
+            url = item.get("url") or ""
+
+            if not title or not url:
+                continue
+
+            url = urljoin(
+                provider["home_url"],
+                url,
+            )
+
+            if not _is_provider_link(
+                provider,
+                url,
+            ):
+                continue
+
+            if not title_matches(
+                query,
+                title,
+            ):
+                continue
+
+            results.append({
+                "title": str(title)[:200],
+                "url": url,
+                "provider_id": provider_key,
+                "provider_name": provider["name"],
+            })
+
+    return results
+
+
+# ============================================================
+# SEARCH ONE PROVIDER
+# ============================================================
+
+async def search_provider(
+    session: aiohttp.ClientSession,
+    provider_key: str,
     query: str,
 ):
-    provider = OFFICIAL_PROVIDERS[key]
+    search_url = provider_search_url(
+        provider_key,
+        query,
+    )
 
-    return {
-        "id": key,
-        "name": provider["name"],
-        "domain": provider["domain"],
-        "url": provider_search_url(
-            key,
+    if not search_url:
+        return []
+
+    html = await _get_text(
+        session,
+        search_url,
+    )
+
+    if not html:
+        return []
+
+    results = []
+
+    # اول JSON-LD
+    results.extend(
+        _extract_jsonld(
+            provider_key,
             query,
-        ),
-        "home_url": provider["home_url"],
+            html,
+        )
+    )
 
-        "status": "official_search",
+    # سپس لینک‌های HTML
+    results.extend(
+        _extract_links(
+            provider_key,
+            query,
+            html,
+        )
+    )
 
-        "dub": False,
-        "subtitle": False,
-        "free": False,
-        "paid": False,
-    }
+    # حذف تکراری‌ها
+    final = []
+    seen = set()
 
+    for item in results:
+
+        url = item["url"].rstrip("/")
+
+        if url in seen:
+            continue
+
+        seen.add(url)
+        final.append(item)
+
+    return final[:10]
+
+
+# ============================================================
+# SEARCH ALL IRANIAN PROVIDERS
+# ============================================================
 
 async def search_iranian_sources(
     query: str,
 ):
-    """
-    لینک جستجوی رسمی عنوان در سرویس‌ها را برمی‌گرداند.
-    """
-
     query = (query or "").strip()
 
     if not query:
         return []
 
-    results = []
+    async with aiohttp.ClientSession(
+        timeout=TIMEOUT,
+    ) as session:
 
-    for key in OFFICIAL_PROVIDERS:
+        tasks = [
+            search_provider(
+                session,
+                key,
+                query,
+            )
+            for key in OFFICIAL_PROVIDERS
+        ]
 
-        item = _result(
-            key,
-            query,
+        responses = await asyncio.gather(
+            *tasks,
+            return_exceptions=True,
         )
 
-        if item.get("url"):
-            results.append(item)
+    results = []
+
+    for provider_key, response in zip(
+        OFFICIAL_PROVIDERS.keys(),
+        responses,
+    ):
+
+        if isinstance(
+            response,
+            Exception,
+        ):
+            logger.error(
+                "Provider %s failed: %s",
+                provider_key,
+                response,
+            )
+            continue
+
+        results.extend(response)
 
     return results
 
+
+# ============================================================
+# MOVIE SEARCH
+# ============================================================
 
 async def search_movies(
     query: str,
     language: str = "fa-IR",
     limit: int = 10,
 ):
-    """
-    جستجو بدون TMDb.
-
-    هر نتیجه یک سرویس رسمی است که کاربر می‌تواند
-    عنوان موردنظر را در آن جستجو کند.
-    """
-
     query = (query or "").strip()
 
     if not query:
@@ -147,46 +594,63 @@ async def search_movies(
 
     results = []
 
-    for provider in providers[:limit]:
+    for index, item in enumerate(
+        providers[:limit],
+        start=1,
+    ):
 
         results.append({
-            "id": provider["id"],
+            "id": index,
 
-            # عنوان واقعی جستجو
-            "title": query,
-            "name": query,
-            "original_title": query,
+            "title": item.get(
+                "title",
+                query,
+            ),
 
-            "_media_type": "provider",
+            "name": item.get(
+                "title",
+                query,
+            ),
 
-            "provider_id": provider["id"],
-            "provider_name": provider["name"],
-            "provider_url": provider["url"],
-            "provider_home": provider["home_url"],
+            "original_title": item.get(
+                "title",
+                query,
+            ),
+
+            "_media_type": "movie",
+
+            "provider_id": item.get(
+                "provider_id"
+            ),
+
+            "provider_name": item.get(
+                "provider_name"
+            ),
+
+            "provider_url": item.get(
+                "url"
+            ),
+
+            "url": item.get(
+                "url"
+            ),
 
             "release_date": "",
+
             "vote_average": None,
 
             "overview": (
-                f"جستجوی «{query}» "
-                f"در {provider['name']}"
+                f"نتیجهٔ پیدا شده در "
+                f"{item.get('provider_name', 'سرویس')}"
             ),
         })
 
-    return results[:limit]
+    return results
 
 
-async def get_watch_providers(
-    tmdb_id: int,
-    media_type: str = "movie",
-    region: Optional[str] = None,
-):
-    """
-    این تابع برای سازگاری با bot.py قدیمی نگه داشته شده.
-    """
-
-    return []
-
+# ============================================================
+# PROVIDER RESULTS
+# ============================================================
 
 async def get_provider_results(
     query: str,
@@ -196,9 +660,59 @@ async def get_provider_results(
     )
 
 
-def _badges(
-    item: dict,
-) -> str:
+# ============================================================
+# WATCH PROVIDERS
+# ============================================================
+
+async def get_watch_providers(
+    tmdb_id: int,
+    media_type: str = "movie",
+    region: Optional[str] = None,
+):
+    """
+    سازگاری با bot.py قدیمی.
+
+    چون این نسخه TMDb ندارد،
+    این تابع نتیجه‌ای از روی tmdb_id نمی‌سازد.
+    """
+
+    return None
+
+
+# ============================================================
+# RESULT FORMAT
+# ============================================================
+
+def _result(
+    key: str,
+    query: str,
+    *,
+    status: str = "search",
+):
+    provider = OFFICIAL_PROVIDERS[key]
+
+    return {
+        "id": key,
+        "name": provider["name"],
+        "domain": provider["domain"],
+        "url": provider_search_url(
+            key,
+            query,
+        ),
+        "status": status,
+
+        "dub": False,
+        "subtitle": False,
+        "free": False,
+        "paid": False,
+    }
+
+
+# ============================================================
+# DISPLAY BADGES
+# ============================================================
+
+def _badges(item: dict) -> str:
 
     badges = []
 
@@ -206,7 +720,7 @@ def _badges(
         badges.append("🆓 رایگان")
 
     if item.get("paid"):
-        badges.append("💳 اشتراکی/خرید")
+        badges.append("💳 اشتراکی")
 
     if item.get("dub"):
         badges.append("🎙 دوبله")
@@ -216,12 +730,15 @@ def _badges(
 
     if not badges:
         return (
-            "ℹ️ وضعیت محتوا در صفحه رسمی سرویس "
-            "بررسی شود."
+            "ℹ️ وضعیت پخش در صفحه رسمی سرویس"
         )
 
     return " • ".join(badges)
 
+
+# ============================================================
+# PROVIDERS TEXT
+# ============================================================
 
 def providers_text(
     providers,
@@ -229,11 +746,13 @@ def providers_text(
 
     if not providers:
         return (
-            "😕 <b>سرویسی پیدا نشد.</b>"
+            "😕 <b>نتیجه‌ای در سرویس‌ها پیدا نشد.</b>\n\n"
+            "نام فیلم را با املای دیگر یا عنوان انگلیسی "
+            "هم امتحان کن."
         )
 
     lines = [
-        "🇮🇷 <b>سرویس‌های رسمی</b>",
+        "🇮🇷 <b>نتایج پیدا شده</b>",
         "━━━━━━━━━━━━━━━━",
     ]
 
@@ -242,22 +761,49 @@ def providers_text(
         name = escape(
             str(
                 item.get(
-                    "name",
-                    "منبع",
+                    "provider_name",
+                    item.get(
+                        "name",
+                        "منبع",
+                    ),
                 )
             )
         )
 
-        url = item.get("url") or ""
+        title = escape(
+            str(
+                item.get(
+                    "title",
+                    "بدون عنوان",
+                )
+            )
+        )
+
+        url = item.get(
+            "url",
+            item.get(
+                "provider_url",
+                "",
+            ),
+        )
 
         lines.append(
-            f"\n🎬 <b>{name}</b>\n"
-            f"   {_badges(item)}\n"
-            f"   🔗 {escape(url)}"
+            f"\n🎬 <b>{title}</b>\n"
+            f"   🇮🇷 {name}\n"
+            f"   {_badges(item)}"
         )
+
+        if url:
+            lines.append(
+                f"   🔗 {escape(url)}"
+            )
 
     return "\n".join(lines)
 
+
+# ============================================================
+# MOVIE TEXT
+# ============================================================
 
 def movie_text(
     movie: dict,
@@ -270,26 +816,31 @@ def movie_text(
         or "بدون عنوان"
     )
 
+    provider_name = (
+        movie.get(
+            "provider_name"
+        )
+        or movie.get(
+            "provider_id"
+        )
+        or "سرویس"
+    )
+
+    overview = movie.get(
+        "overview",
+        "اطلاعات بیشتری ثبت نشده است.",
+    )
+
     title = escape(
         str(title)
     )
 
     provider_name = escape(
-        str(
-            movie.get(
-                "provider_name",
-                "",
-            )
-        )
+        str(provider_name)
     )
 
     overview = escape(
-        str(
-            movie.get(
-                "overview",
-                "توضیحی ثبت نشده است.",
-            )
-        )
+        str(overview)
     )
 
     if len(overview) > 500:
@@ -303,7 +854,13 @@ def movie_text(
     )
 
 
+# ============================================================
+# EXPORT
+# ============================================================
+
 __all__ = [
+    "OFFICIAL_PROVIDERS",
+    "search_provider",
     "search_iranian_sources",
     "search_movies",
     "get_watch_providers",
@@ -311,5 +868,4 @@ __all__ = [
     "provider_search_url",
     "providers_text",
     "movie_text",
-    "OFFICIAL_PROVIDERS",
 ]
