@@ -302,30 +302,89 @@ async def search_start(call: CallbackQuery, state: FSMContext):
 # ============================================================
 
 async def perform_movie_search(query: str, user_id: int):
-    # First try local database
+    """جستجوی فیلم با اولویت دیتابیس محلی و سپس منابع دیگر"""
+    query = query.strip()
+    if not query:
+        return []
+
+    results = []
+    
+    # 1. جستجوی توی دیتابیس محلی
     local_results = search_local_movies(query)
     if local_results:
-        return [{
-            "id": item.get("tmdb_id", i + 1),
-            "title": item.get("title", query),
-            "name": item.get("title", query),
-            "original_title": item.get("original_title", query),
-            "_media_type": "movie",
-            "provider_id": "local",
-            "provider_name": "دیتابیس داخلی",
-            "provider_url": "",
-            "url": "",
-            "release_date": str(item.get("year", "")),
-            "vote_average": item.get("vote_average", 0),
-            "overview": item.get("overview", ""),
-        } for i, item in enumerate(local_results)]
-
-    # Then try Iranian providers
-    return await search_movies(
-        query=query,
-        language=language_code(user_id),
-        limit=10,
-    )
+        for i, item in enumerate(local_results):
+            results.append({
+                "id": item.get("tmdb_id", i + 1),
+                "title": item.get("title", query),
+                "name": item.get("title", query),
+                "original_title": item.get("original_title", query),
+                "_media_type": "movie",
+                "provider_id": "local",
+                "provider_name": "📚 دیتابیس داخلی",
+                "provider_url": "",
+                "url": "",
+                "release_date": str(item.get("year", "")),
+                "vote_average": item.get("vote_average", 0),
+                "overview": item.get("overview", "اطلاعات بیشتری در دیتابیس موجود نیست."),
+            })
+    
+    # 2. جستجوی توی IMDb از طریق OMDb (اگه کلید داشته باشیم)
+    if OMDB_API_KEY and len(results) < 5:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    "https://www.omdbapi.com/",
+                    params={"apikey": OMDB_API_KEY, "s": query},
+                    timeout=10,
+                ) as response:
+                    data = await response.json()
+                    
+                    if data.get("Response") == "True":
+                        for item in data.get("Search", [])[:10]:
+                            # دریافت جزئیات بیشتر برای هر فیلم
+                            try:
+                                async with session.get(
+                                    "https://www.omdbapi.com/",
+                                    params={"apikey": OMDB_API_KEY, "i": item.get("imdbID")},
+                                    timeout=10,
+                                ) as detail_response:
+                                    detail_data = await detail_response.json()
+                                    year = detail_data.get("Year", "")
+                                    plot = detail_data.get("Plot", "اطلاعات بیشتری موجود نیست.")
+                            except:
+                                year = item.get("Year", "")
+                                plot = "اطلاعات بیشتری موجود نیست."
+                            
+                            results.append({
+                                "id": item.get("imdbID", len(results) + 1),
+                                "title": item.get("Title", query),
+                                "name": item.get("Title", query),
+                                "original_title": item.get("Title", query),
+                                "_media_type": "movie",
+                                "provider_id": "imdb",
+                                "provider_name": "⭐ IMDb (OMDb)",
+                                "provider_url": f"https://www.imdb.com/title/{item.get('imdbID', '')}/",
+                                "url": f"https://www.imdb.com/title/{item.get('imdbID', '')}/",
+                                "release_date": year,
+                                "vote_average": None,
+                                "overview": plot[:300] + "..." if len(plot) > 300 else plot,
+                            })
+        except Exception as e:
+            logger.error(f"OMDb error: {e}")
+    
+    # 3. جستجوی توی سرویس‌های ایرانی (اگه نتایج قبلی نبود)
+    if not results:
+        try:
+            iranian_results = await search_movies(
+                query=query,
+                language=language_code(user_id),
+                limit=10,
+            )
+            results.extend(iranian_results)
+        except Exception as e:
+            logger.error(f"Iranian providers error: {e}")
+    
+    return results
 
 
 @router.message(MovieSearch.query)
@@ -336,13 +395,13 @@ async def movie_search(message: Message, state: FSMContext):
         return
 
     status_message = await message.answer(
-        f"🔎 <b>در حال جستجو...</b>\n\n🎬 <code>{clean(query)}</code>\n\n🌐 در حال آماده‌سازی لینک‌های جستجوی سرویس‌ها..."
+        f"🔎 <b>در حال جستجو...</b>\n\n🎬 <code>{clean(query)}</code>\n\n🌐 در حال جستجو در منابع مختلف..."
     )
 
     try:
         results = await perform_movie_search(query, message.from_user.id)
     except Exception as e:
-        logger.exception("Provider search failed")
+        logger.exception("Search failed")
         await status_message.edit_text(
             "⚠️ <b>خطا در جستجو</b>\n\nسرویس جستجو موقتاً در دسترس نیست."
         )
@@ -351,14 +410,14 @@ async def movie_search(message: Message, state: FSMContext):
 
     if not results:
         await status_message.edit_text(
-            f"😕 <b>نتیجه‌ای پیدا نشد</b>\n━━━━━━━━━━━━━━━━\n\n🔎 {clean(query)}",
+            f"😕 <b>نتیجه‌ای پیدا نشد</b>\n━━━━━━━━━━━━━━━━\n\n🔎 {clean(query)}\n\n💡 نکته: برای فیلم‌های جدید از دکمه «جستجوی دوباره» استفاده کن.",
             reply_markup=search_watch_kb(lang_of(message.from_user.id)),
         )
         await state.clear()
         return
 
     await status_message.edit_text(
-        f"🎬 <b>سرویس‌های جستجو</b>\n━━━━━━━━━━━━━━━━\n\n🔎 عنوان: <b>{clean(query)}</b>\n\nیکی از سرویس‌ها را انتخاب کن:",
+        f"🎬 <b>نتیجه جستجو</b>\n━━━━━━━━━━━━━━━━\n\n🔎 عنوان: <b>{clean(query)}</b>\n\n📊 <b>{len(results)} نتیجه پیدا شد</b>\n\nیکی از گزینه‌ها را انتخاب کن:",
         reply_markup=search_results_kb(results),
     )
     await state.clear()
@@ -385,8 +444,42 @@ async def provider_select(call: CallbackQuery):
         await call.message.answer("⚠️ عنوان جستجو قابل تشخیص نیست.")
         return
 
+    # Try to get results from providers
     results = await get_provider_results(query)
     selected = None
+    
+    # First check if it's a local or IMDb result
+    if provider_id == "local":
+        # Local database result - show details
+        local_results = search_local_movies(query)
+        if local_results:
+            item = local_results[0]
+            await call.message.edit_text(
+                f"🎬 <b>{clean(item.get('title', query))}</b>\n━━━━━━━━━━━━━━━━\n\n"
+                f"📅 سال: {item.get('year', 'نامشخص')}\n"
+                f"📚 منبع: دیتابیس داخلی\n\n"
+                f"📝 {clean(item.get('overview', 'اطلاعات بیشتری موجود نیست.'))}",
+                reply_markup=movie_result_kb("local", "", query),
+            )
+            await call.answer()
+            return
+    
+    elif provider_id == "imdb":
+        # IMDb result - show details with link
+        await call.message.edit_text(
+            f"🎬 <b>{clean(query)}</b>\n━━━━━━━━━━━━━━━━\n\n"
+            f"⭐ منبع: IMDb\n\n"
+            f"🔗 برای مشاهده جزئیات بیشتر روی دکمه زیر کلیک کن:",
+            reply_markup=movie_result_kb(
+                "imdb", 
+                f"https://www.imdb.com/find?q={query.replace(' ', '+')}", 
+                query
+            ),
+        )
+        await call.answer()
+        return
+    
+    # Iranian providers
     for item in results:
         if item.get("provider_id") == provider_id:
             selected = item
