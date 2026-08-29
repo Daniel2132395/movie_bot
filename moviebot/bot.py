@@ -275,7 +275,7 @@ async def set_region(call: CallbackQuery):
 async def search_watch_center(call: CallbackQuery):
     user_id = call.from_user.id
     await call.message.edit_text(
-        "🎬 <b>جستجو و تماشای فیلم</b>\n━━━━━━━━━━━━━━━━\n\nنام فیلم یا سریال را وارد کن.\n\nمثال:\n🎬 Breaking Bad\n🎬 Interstellar\n📺 Stranger Things\n\n🔎 جستجو مستقیم روی OMDb انجام می‌شود.",
+        "🎬 <b>جستجو و تماشای فیلم</b>\n━━━━━━━━━━━━━━━━\n\nنام فیلم یا سریال را وارد کن.\n\nمثال:\n🎬 Breaking Bad\n🎬 Interstellar\n📺 Dark\n\n🔎 جستجو با OMDb API انجام می‌شود.",
         reply_markup=search_watch_kb(lang_of(user_id)),
     )
     await call.answer()
@@ -290,7 +290,7 @@ async def search_start(call: CallbackQuery, state: FSMContext):
     await state.clear()
     lang = lang_of(call.from_user.id)
     await call.message.edit_text(
-        "🔎 <b>جستجوی فیلم و سریال</b>\n━━━━━━━━━━━━━━━━\n\nنام فیلم یا سریال را ارسال کن.\n\nمثلاً:\n🎬 Breaking Bad\n🎬 Interstellar\n📺 Dark",
+        "🔎 <b>جستجوی فیلم و سریال</b>\n━━━━━━━━━━━━━━━━\n\nنام فیلم یا سریال را ارسال کن.\n\nمثلاً:\n🎬 Breaking Bad\n🎬 Interstellar\n📺 Dark\n\n💡 از عنوان انگلیسی استفاده کن برای نتیجه بهتر.",
         reply_markup=search_watch_kb(lang),
     )
     await state.set_state(MovieSearch.query)
@@ -298,7 +298,7 @@ async def search_start(call: CallbackQuery, state: FSMContext):
 
 
 # ============================================================
-# PERFORM SEARCH - با OMDb API
+# SEARCH OMDb
 # ============================================================
 
 async def search_omdb(query: str):
@@ -310,24 +310,28 @@ async def search_omdb(query: str):
     try:
         async with aiohttp.ClientSession() as session:
             # جستجوی اولیه
-            async with session.get(
-                "https://www.omdbapi.com/",
-                params={"apikey": OMDB_API_KEY, "s": query, "type": "movie,series"},
-                timeout=15,
-            ) as response:
+            url = "https://www.omdbapi.com/"
+            params = {
+                "apikey": OMDB_API_KEY,
+                "s": query,
+                "type": "movie,series"
+            }
+            
+            async with session.get(url, params=params, timeout=15) as response:
                 data = await response.json()
                 
                 if data.get("Response") != "True":
                     return []
                 
                 for item in data.get("Search", [])[:10]:
-                    # دریافت جزئیات کامل
+                    # دریافت جزئیات کامل هر فیلم
+                    detail_params = {
+                        "apikey": OMDB_API_KEY,
+                        "i": item.get("imdbID")
+                    }
+                    
                     try:
-                        async with session.get(
-                            "https://www.omdbapi.com/",
-                            params={"apikey": OMDB_API_KEY, "i": item.get("imdbID")},
-                            timeout=10,
-                        ) as detail_response:
+                        async with session.get(url, params=detail_params, timeout=10) as detail_response:
                             detail = await detail_response.json()
                             
                             if detail.get("Response") == "True":
@@ -337,7 +341,13 @@ async def search_omdb(query: str):
                                 director = detail.get("Director", "N/A")
                                 actors = detail.get("Actors", "N/A")
                                 imdb_rating = detail.get("imdbRating", "N/A")
-                                poster = detail.get("Poster", "")
+                            else:
+                                year = item.get("Year", "N/A")
+                                plot = "اطلاعات بیشتری موجود نیست."
+                                genre = "N/A"
+                                director = "N/A"
+                                actors = "N/A"
+                                imdb_rating = "N/A"
                     except:
                         year = item.get("Year", "N/A")
                         plot = "اطلاعات بیشتری موجود نیست."
@@ -345,7 +355,6 @@ async def search_omdb(query: str):
                         director = "N/A"
                         actors = "N/A"
                         imdb_rating = "N/A"
-                        poster = ""
                     
                     results.append({
                         "id": item.get("imdbID", len(results) + 1),
@@ -363,7 +372,6 @@ async def search_omdb(query: str):
                         "genre": genre,
                         "director": director,
                         "actors": actors,
-                        "poster": poster,
                     })
     except Exception as e:
         logger.error(f"OMDb search error: {e}")
@@ -371,8 +379,12 @@ async def search_omdb(query: str):
     return results
 
 
+# ============================================================
+# PERFORM SEARCH
+# ============================================================
+
 async def perform_movie_search(query: str, user_id: int):
-    """جستجوی فیلم با اولویت OMDb API"""
+    """جستجوی فیلم با OMDb API و دیتابیس محلی"""
     query = query.strip()
     if not query:
         return []
@@ -398,22 +410,9 @@ async def perform_movie_search(query: str, user_id: int):
                 "overview": item.get("overview", "اطلاعات بیشتری در دیتابیس موجود نیست."),
             })
     
-    # 2. جستجوی OMDb (اگر کلید داشته باشیم و نتایج کم باشه)
-    if OMDB_API_KEY and len(results) < 5:
-        omdb_results = await search_omdb(query)
-        results.extend(omdb_results)
-    
-    # 3. جستجوی سرویس‌های ایرانی (آخرین اولویت)
-    if not results:
-        try:
-            iranian_results = await search_movies(
-                query=query,
-                language=language_code(user_id),
-                limit=10,
-            )
-            results.extend(iranian_results)
-        except Exception as e:
-            logger.error(f"Iranian providers error: {e}")
+    # 2. جستجوی OMDb
+    omdb_results = await search_omdb(query)
+    results.extend(omdb_results)
     
     return results
 
@@ -426,7 +425,7 @@ async def movie_search(message: Message, state: FSMContext):
         return
 
     status_message = await message.answer(
-        f"🔎 <b>در حال جستجو...</b>\n\n🎬 <code>{clean(query)}</code>\n\n🌐 در حال جستجو در OMDb و منابع دیگر..."
+        f"🔎 <b>در حال جستجو...</b>\n\n🎬 <code>{clean(query)}</code>\n\n🌐 در حال جستجو در OMDb..."
     )
 
     try:
@@ -434,14 +433,14 @@ async def movie_search(message: Message, state: FSMContext):
     except Exception as e:
         logger.exception("Search failed")
         await status_message.edit_text(
-            "⚠️ <b>خطا در جستجو</b>\n\nسرویس جستجو موقتاً در دسترس نیست."
+            "⚠️ <b>خطا در جستجو</b>\n\nلطفاً دوباره تلاش کن."
         )
         await state.clear()
         return
 
     if not results:
         await status_message.edit_text(
-            f"😕 <b>نتیجه‌ای پیدا نشد</b>\n━━━━━━━━━━━━━━━━\n\n🔎 {clean(query)}\n\n💡 نکته: از عنوان انگلیسی استفاده کن.\nمثال: Dark, Inception, Interstellar",
+            f"😕 <b>نتیجه‌ای پیدا نشد</b>\n━━━━━━━━━━━━━━━━\n\n🔎 {clean(query)}\n\n💡 نکات:\n• از عنوان انگلیسی استفاده کن\n• مثال: Dark, Inception, Interstellar\n• املای عنوان رو بررسی کن",
             reply_markup=search_watch_kb(lang_of(message.from_user.id)),
         )
         await state.clear()
@@ -475,9 +474,8 @@ async def provider_select(call: CallbackQuery):
         await call.message.answer("⚠️ عنوان جستجو قابل تشخیص نیست.")
         return
 
-    # OMDb result
+    # OMDb result - نمایش جزئیات کامل
     if provider_id == "omdb":
-        # Get full details from OMDb
         if OMDB_API_KEY:
             try:
                 async with aiohttp.ClientSession() as session:
@@ -496,7 +494,6 @@ async def provider_select(call: CallbackQuery):
                             director = data.get("Director", "N/A")
                             actors = data.get("Actors", "N/A")
                             imdb_rating = data.get("imdbRating", "N/A")
-                            poster = data.get("Poster", "")
                             imdb_id = data.get("imdbID", "")
                             
                             text = f"🎬 <b>{clean(title)}</b> ({year})\n━━━━━━━━━━━━━━━━\n\n"
@@ -872,7 +869,7 @@ async def fallback_text_search(message: Message):
         return
 
     await message.answer(
-        "🔎 <b>برای جستجو</b>\n\nاز منوی «جستجو و تماشای فیلم» استفاده کن.",
+        "🔎 <b>برای جستجو</b>\n\nاز منوی «جستجو و تماشای فیلم» استفاده کن.\n\n💡 یا مستقیماً عنوان فیلم رو به صورت انگلیسی بفرست.",
         reply_markup=search_watch_kb(lang_of(message.from_user.id)),
     )
 
@@ -884,6 +881,9 @@ async def fallback_text_search(message: Message):
 async def main():
     if not BOT_TOKEN or ":" not in BOT_TOKEN:
         raise SystemExit("BOT_TOKEN is missing or invalid.")
+
+    if not OMDB_API_KEY:
+        logger.warning("⚠️ OMDB_API_KEY is not set! Search may not work properly.")
 
     try:
         init_movie_db()
@@ -898,7 +898,7 @@ async def main():
     dp.include_router(admin_router)  # Admin router
 
     await bot.delete_webhook(drop_pending_updates=False)
-    logger.info("MovieBot started.")
+    logger.info("MovieBot started with OMDb API.")
 
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
