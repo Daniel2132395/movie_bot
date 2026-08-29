@@ -1,15 +1,21 @@
 # bot.py
 # ============================================================
 # MovieBot
-# aiogram 3.x + SQLite
+# aiogram 3.x
 #
-# جستجوی فیلم:
-#   فقط از providers.py
-#   بدون TMDb
+# Search:
+#   - بدون TMDb
+#   - جستجوی عنوان در سرویس‌های رسمی
+#   - بدون استخراج فایل ویدئو
 #
-# لینک مستقیم ویدئو:
-#   ندارد
-#
+# Other features:
+#   - IMDb Top
+#   - Genres
+#   - Upcoming
+#   - Actor
+#   - Director
+#   - Compare
+#   - Recommendation
 # ============================================================
 
 import asyncio
@@ -60,8 +66,8 @@ from movie_db import (
 from providers import (
     search_movies,
     get_provider_results,
-    movie_text,
     providers_text,
+    movie_text,
 )
 
 
@@ -80,6 +86,11 @@ logger = logging.getLogger("MovieBot")
 
 BOT_TOKEN = os.getenv(
     "BOT_TOKEN",
+    "",
+).strip()
+
+OMDB_API_KEY = os.getenv(
+    "OMDB_API_KEY",
     "",
 ).strip()
 
@@ -107,6 +118,7 @@ def health():
 
 
 def run_web_server():
+
     port = int(
         os.getenv(
             "PORT",
@@ -128,6 +140,7 @@ def run_web_server():
 
 
 def keep_alive():
+
     thread = Thread(
         target=run_web_server,
         daemon=True,
@@ -152,6 +165,7 @@ USER_REGION: dict[int, str] = {}
 
 
 def lang_of(user_id: int) -> str:
+
     return USER_LANG.get(
         user_id,
         "fa",
@@ -159,17 +173,10 @@ def lang_of(user_id: int) -> str:
 
 
 def region_of(user_id: int) -> str:
+
     return USER_REGION.get(
         user_id,
         DEFAULT_REGION,
-    )
-
-
-def language_code(user_id: int) -> str:
-    return (
-        "fa-IR"
-        if lang_of(user_id) == "fa"
-        else "en-US"
     )
 
 
@@ -178,6 +185,7 @@ def language_code(user_id: int) -> str:
 # ============================================================
 
 class Quiz(StatesGroup):
+
     mood = State()
     genre = State()
     mbti = State()
@@ -186,12 +194,14 @@ class Quiz(StatesGroup):
 
 
 class TextSearch(StatesGroup):
+
     actor = State()
     director = State()
     movie = State()
 
 
 class MovieSearch(StatesGroup):
+
     query = State()
 
 
@@ -200,11 +210,21 @@ class MovieSearch(StatesGroup):
 # ============================================================
 
 def clean(text) -> str:
+
     if text is None:
         return ""
 
     return escape(
         str(text)
+    )
+
+
+def language_code(user_id: int) -> str:
+
+    return (
+        "fa-IR"
+        if lang_of(user_id) == "fa"
+        else "en-US"
     )
 
 
@@ -388,7 +408,7 @@ async def choose_region(
             "🌍 <b>منطقه تماشا</b>\n"
             "━━━━━━━━━━━━━━━━\n\n"
             "منطقه موردنظر را انتخاب کن.\n\n"
-            f"📍 منطقه فعلی: <b>{region}</b>"
+            f"📍 منطقه فعلی: <b>{clean(region)}</b>"
         ),
         reply_markup=region_kb(),
     )
@@ -428,17 +448,15 @@ async def set_region(
         call.from_user.id
     ] = region
 
-    lang = lang_of(
-        call.from_user.id
-    )
-
     await call.message.edit_text(
         (
             "✅ <b>منطقه ذخیره شد</b>\n"
             "━━━━━━━━━━━━━━━━\n\n"
             f"🌍 منطقه: <b>{region}</b>"
         ),
-        reply_markup=main_menu_kb(lang),
+        reply_markup=main_menu_kb(
+            lang_of(call.from_user.id)
+        ),
     )
 
     await call.answer(
@@ -458,17 +476,18 @@ async def search_watch_center(
 ):
 
     user_id = call.from_user.id
-    region = region_of(user_id)
 
     await call.message.edit_text(
         (
             "🎬 <b>جستجو و تماشای فیلم</b>\n"
             "━━━━━━━━━━━━━━━━\n\n"
-            "🔎 فیلم یا سریالت را جستجو کن.\n\n"
-            "جستجو مستقیماً از سرویس‌های تعریف‌شده "
-            "در providers.py انجام می‌شود.\n\n"
-            f"🌍 منطقه: <b>{region}</b>\n\n"
-            "👇 یکی از گزینه‌ها را انتخاب کن:"
+            "نام فیلم یا سریال را وارد کن.\n\n"
+            "مثال:\n"
+            "🎬 Breaking Bad\n"
+            "🎬 Interstellar\n"
+            "📺 Stranger Things\n\n"
+            "🔎 جستجو مستقیماً روی سرویس‌های "
+            "تعریف‌شده انجام می‌شود."
         ),
         reply_markup=search_watch_kb(
             lang_of(user_id)
@@ -500,11 +519,11 @@ async def search_start(
         (
             "🔎 <b>جستجوی فیلم و سریال</b>\n"
             "━━━━━━━━━━━━━━━━\n\n"
-            "نام فیلم یا سریال را بفرست.\n\n"
+            "نام فیلم یا سریال را ارسال کن.\n\n"
             "مثلاً:\n"
+            "🎬 Breaking Bad\n"
             "🎬 Interstellar\n"
-            "📺 Breaking Bad\n"
-            "🎬 Inception"
+            "📺 Dark"
         ),
         reply_markup=search_watch_kb(lang),
     )
@@ -517,7 +536,7 @@ async def search_start(
 
 
 # ============================================================
-# PROVIDER MOVIE SEARCH
+# PROVIDER SEARCH
 # ============================================================
 
 async def perform_movie_search(
@@ -526,15 +545,11 @@ async def perform_movie_search(
 ):
 
     return await search_movies(
-        query,
+        query=query,
         language=language_code(user_id),
         limit=10,
     )
 
-
-# ============================================================
-# MOVIE SEARCH
-# ============================================================
 
 @router.message(
     MovieSearch.query
@@ -551,16 +566,17 @@ async def movie_search(
     if not query:
 
         await message.answer(
-            "❌ لطفاً نام فیلم یا سریال را ارسال کن."
+            "❌ لطفاً نام فیلم یا سریال را وارد کن."
         )
 
         return
 
-    loading = await message.answer(
+    status_message = await message.answer(
         (
             "🔎 <b>در حال جستجو...</b>\n\n"
-            f"🎬 <code>{clean(query)}</code>\n"
-            "🇮🇷 در سرویس‌های ایرانی..."
+            f"🎬 <code>{clean(query)}</code>\n\n"
+            "🌐 در حال آماده‌سازی لینک‌های "
+            "جستجوی سرویس‌ها..."
         )
     )
 
@@ -574,18 +590,30 @@ async def movie_search(
     except Exception:
 
         logger.exception(
-            "Iranian provider search failed"
+            "Provider search failed"
         )
 
-        await loading.edit_text(
+        await status_message.edit_text(
             (
                 "⚠️ <b>خطا در جستجو</b>\n\n"
-                "یکی از سرویس‌ها موقتاً در دسترس نیست."
+                "سرویس جستجو موقتاً در دسترس نیست."
+            )
+        )
+
+        await state.clear()
+
+        return
+
+    if not results:
+
+        await status_message.edit_text(
+            (
+                "😕 <b>نتیجه‌ای پیدا نشد</b>\n"
+                "━━━━━━━━━━━━━━━━\n\n"
+                f"🔎 {clean(query)}"
             ),
             reply_markup=search_watch_kb(
-                lang_of(
-                    message.from_user.id
-                )
+                lang_of(message.from_user.id)
             ),
         )
 
@@ -593,56 +621,38 @@ async def movie_search(
 
         return
 
-    await state.clear()
-
-    if not results:
-
-        await loading.edit_text(
-            (
-                "😕 <b>نتیجه‌ای پیدا نشد</b>\n"
-                "━━━━━━━━━━━━━━━━\n\n"
-                f"🔎 جستجو: <b>{clean(query)}</b>\n\n"
-                "نام دیگری را امتحان کن."
-            ),
-            reply_markup=search_watch_kb(
-                lang_of(
-                    message.from_user.id
-                )
-            ),
-        )
-
-        return
-
-    await loading.edit_text(
+    await status_message.edit_text(
         (
-            "🎬 <b>نتایج جستجو</b>\n"
+            "🎬 <b>سرویس‌های جستجو</b>\n"
             "━━━━━━━━━━━━━━━━\n\n"
-            f"🔎 «{clean(query)}»\n\n"
-            "برای ورود به جستجوی هر سرویس، "
-            "گزینه موردنظر را انتخاب کن:"
+            f"🔎 عنوان: <b>{clean(query)}</b>\n\n"
+            "یکی از سرویس‌ها را انتخاب کن:"
         ),
         reply_markup=search_results_kb(
             results
         ),
     )
 
+    await state.clear()
+
 
 # ============================================================
-# RESULT SELECT
+# PROVIDER RESULT SELECT
 # ============================================================
 
 @router.callback_query(
-    F.data.startswith("result:")
+    F.data.startswith("provider:")
 )
-async def result_select(
+async def provider_select(
     call: CallbackQuery,
 ):
 
     parts = call.data.split(
-        ":"
+        ":",
+        1,
     )
 
-    if len(parts) != 3:
+    if len(parts) != 2:
 
         await call.answer(
             "نتیجه نامعتبر است.",
@@ -651,184 +661,114 @@ async def result_select(
 
         return
 
-    provider_key = parts[1]
-
-    query = parts[2]
-
-    if not provider_key or not query:
-
-        await call.answer(
-            "اطلاعات ناقص است.",
-            show_alert=True,
-        )
-
-        return
-
-    # query داخل callback-data با + یا درصدکد ارسال می‌شود.
-    from urllib.parse import unquote_plus
-
-    try:
-        decoded_query = unquote_plus(query)
-    except Exception:
-        decoded_query = query
+    provider_id = parts[1]
 
     await call.answer(
-        "🔎 در حال آماده‌سازی..."
+        "🔗 لینک آماده شد"
     )
 
-    providers = await get_provider_results(
-        decoded_query
-    )
+    # provider id را از callback می‌گیریم
+    # عنوان در پیام callback قابل دسترسی نیست،
+    # بنابراین از cache موقت کاربر استفاده می‌کنیم.
+    #
+    # برای جلوگیری از وابستگی به TMDb،
+    # عنوان از متن پیام استخراج می‌شود.
 
-    selected = None
+    query = ""
 
-    for item in providers:
+    if call.message and call.message.text:
 
-        if item.get("id") == provider_key:
+        text = call.message.text
 
-            selected = item
-            break
+        marker = "🔎 عنوان:"
 
-    if not selected:
+        if marker in text:
 
-        await call.message.edit_text(
-            (
-                "😕 <b>سرویس پیدا نشد</b>\n"
-                "━━━━━━━━━━━━━━━━\n\n"
-                "لطفاً دوباره جستجو کن."
-            ),
-            reply_markup=search_watch_kb(
-                lang_of(
-                    call.from_user.id
+            query = (
+                text.split(
+                    marker,
+                    1,
+                )[1]
+                .split(
+                    "\n",
+                    1,
+                )[0]
+                .strip()
+                .replace(
+                    "<b>",
+                    "",
                 )
-            ),
+                .replace(
+                    "</b>",
+                    "",
+                )
+            )
+
+    if not query:
+
+        await call.message.answer(
+            "⚠️ عنوان جستجو قابل تشخیص نیست."
         )
 
         return
 
-    movie = {
-        "title": decoded_query,
-        "original_title": decoded_query,
-        "name": decoded_query,
-        "provider_name": selected.get(
-            "name",
-            "سرویس",
-        ),
-        "provider_id": selected.get(
-            "id"
-        ),
-        "provider_url": selected.get(
-            "url"
-        ),
-        "overview": (
-            f"صفحه جستجوی «{decoded_query}» "
-            f"در {selected.get('name', 'سرویس')}."
-        ),
-        "_media_type": "movie",
-    }
-
-    try:
-
-        save_movie(
-            movie
-        )
-
-    except Exception:
-
-        logger.exception(
-            "Could not save movie"
-        )
-
-    await call.message.edit_text(
-        movie_text(
-            movie
-        ),
-        reply_markup=movie_result_kb(
-            provider_id=selected.get(
-                "id"
-            ),
-            provider_url=selected.get(
-                "url"
-            ),
-            query=decoded_query,
-        ),
-    )
-
-
-# ============================================================
-# PROVIDER WATCH PAGE
-# ============================================================
-
-@router.callback_query(
-    F.data.startswith("watch:")
-)
-async def watch_providers(
-    call: CallbackQuery,
-):
-
-    parts = call.data.split(
-        ":",
-        2,
-    )
-
-    if len(parts) != 3:
-
-        await call.answer(
-            "اطلاعات نامعتبر است.",
-            show_alert=True,
-        )
-
-        return
-
-    provider_key = parts[1]
-    query = parts[2]
-
-    from urllib.parse import unquote_plus
-
-    query = unquote_plus(query)
-
-    providers = await get_provider_results(
+    results = await get_provider_results(
         query
     )
 
     selected = None
 
-    for item in providers:
+    for item in results:
 
-        if item.get("id") == provider_key:
+        if item.get("id") == provider_id:
 
             selected = item
+
             break
 
     if not selected:
 
-        await call.answer(
-            "سرویس پیدا نشد.",
-            show_alert=True,
+        await call.message.answer(
+            "⚠️ سرویس موردنظر پیدا نشد."
+        )
+
+        return
+
+    name = clean(
+        selected.get(
+            "name",
+            "سرویس",
+        )
+    )
+
+    url = selected.get(
+        "url"
+    )
+
+    if not url:
+
+        await call.message.answer(
+            "⚠️ لینک سرویس موجود نیست."
         )
 
         return
 
     text = (
-        "📺 <b>سرویس انتخاب‌شده</b>\n"
+        "🎬 <b>نتیجه جستجو</b>\n"
         "━━━━━━━━━━━━━━━━\n\n"
-        f"🎬 عنوان: <b>{clean(query)}</b>\n"
-        f"🇮🇷 سرویس: <b>{clean(selected.get('name'))}</b>\n\n"
-        "برای ادامه، وارد صفحه رسمی جستجوی سرویس شو."
+        f"🔎 عنوان: <b>{clean(query)}</b>\n\n"
+        f"🇮🇷 سرویس: <b>{name}</b>\n\n"
+        "برای مشاهده نتیجه، روی دکمه زیر بزن:"
     )
 
     await call.message.edit_text(
         text,
-        reply_markup=watch_kb(
-            provider_url=selected.get(
-                "url"
-            ),
-            provider_key=provider_key,
+        reply_markup=movie_result_kb(
+            provider_id=provider_id,
+            provider_url=url,
             query=query,
         ),
     )
-
-    await call.answer()
 
 
 # ============================================================
@@ -846,21 +786,15 @@ def _fmt_entry(
     lang,
 ):
 
-    if lang == "fa":
-
-        kind_label = (
-            "سریال"
-            if kind == "series"
-            else "فیلم"
-        )
-
-    else:
-
-        kind_label = (
-            "Series"
-            if kind == "series"
-            else "Movie"
-        )
+    kind_label = (
+        "سریال"
+        if kind == "series" and lang == "fa"
+        else "فیلم"
+        if lang == "fa"
+        else "Series"
+        if kind == "series"
+        else "Movie"
+    )
 
     rt_s = (
         f"{rt}%"
@@ -924,9 +858,6 @@ async def top250(
         "🏆 <b>برترین‌های IMDb</b>\n"
         "━━━━━━━━━━━━━━━━\n\n"
         + "\n\n".join(lines)
-        + "\n\n"
-        "💡 برای جستجوی عنوان، از بخش "
-        "«جستجو و تماشای فیلم» استفاده کن."
     )
 
     await call.message.edit_text(
@@ -1084,21 +1015,11 @@ async def upcoming(
             f"   {clean(desc)}"
         )
 
-    if not lines:
-
-        text = (
-            "📅 <b>در انتظار اکران</b>\n"
-            "━━━━━━━━━━━━━━━━\n\n"
-            "اطلاعاتی ثبت نشده است."
-        )
-
-    else:
-
-        text = (
-            "📅 <b>در انتظار اکران</b>\n"
-            "━━━━━━━━━━━━━━━━\n\n"
-            + "\n\n".join(lines)
-        )
+    text = (
+        "📅 <b>در انتظار اکران</b>\n"
+        "━━━━━━━━━━━━━━━━\n\n"
+        + "\n\n".join(lines)
+    )
 
     await call.message.edit_text(
         text[:4090],
@@ -1184,10 +1105,7 @@ async def do_actor_search(
     else:
 
         await message.answer(
-            (
-                "😕 <b>بازیگر موردنظر پیدا نشد.</b>\n\n"
-                "این بخش از داده‌های محلی پروژه استفاده می‌کند."
-            ),
+            "😕 بازیگر موردنظر پیدا نشد.",
             reply_markup=back_kb(lang),
         )
 
@@ -1270,10 +1188,7 @@ async def do_director_search(
     else:
 
         await message.answer(
-            (
-                "😕 <b>کارگردان موردنظر پیدا نشد.</b>\n\n"
-                "این بخش از داده‌های محلی پروژه استفاده می‌کند."
-            ),
+            "😕 کارگردان موردنظر پیدا نشد.",
             reply_markup=back_kb(lang),
         )
 
@@ -1345,10 +1260,73 @@ async def do_compare(
         imdb is None
         and rt is None
         and meta is None
+        and OMDB_API_KEY
+    ):
+
+        try:
+
+            async with aiohttp.ClientSession() as session:
+
+                async with session.get(
+                    "https://www.omdbapi.com/",
+                    params={
+                        "apikey": OMDB_API_KEY,
+                        "t": query,
+                    },
+                    timeout=10,
+                ) as response:
+
+                    data = await response.json()
+
+            if data.get("Response") == "True":
+
+                for source in data.get(
+                    "Ratings",
+                    [],
+                ):
+
+                    name = source.get(
+                        "Source"
+                    )
+
+                    value = source.get(
+                        "Value",
+                        "",
+                    )
+
+                    if name == "Internet Movie Database":
+
+                        imdb = value.split(
+                            "/"
+                        )[0]
+
+                    elif name == "Rotten Tomatoes":
+
+                        rt = value.replace(
+                            "%",
+                            "",
+                        )
+
+                    elif name == "Metacritic":
+
+                        meta = value.split(
+                            "/"
+                        )[0]
+
+        except Exception:
+
+            logger.exception(
+                "OMDb request failed"
+            )
+
+    if (
+        imdb is None
+        and rt is None
+        and meta is None
     ):
 
         text = (
-            "😕 <b>عنوان در داده‌های مقایسه پیدا نشد.</b>\n"
+            "😕 <b>عنوان پیدا نشد</b>\n"
             "━━━━━━━━━━━━━━━━\n\n"
             f"🔎 {clean(query)}"
         )
@@ -1599,17 +1577,6 @@ async def quiz_disliked(
         top_n=6,
     )
 
-    if not results:
-
-        await message.answer(
-            "😕 پیشنهادی پیدا نشد.",
-            reply_markup=back_kb(lang),
-        )
-
-        await state.clear()
-
-        return
-
     lines = []
 
     for i, item in enumerate(
@@ -1670,56 +1637,15 @@ async def fallback_text_search(
         return
 
     await message.answer(
-        "🔎 <b>در حال جستجو در سرویس‌های ایرانی...</b>"
-    )
-
-    try:
-
-        results = await search_movies(
-            text,
-            language=language_code(
-                message.from_user.id
-            ),
-            limit=10,
-        )
-
-    except Exception:
-
-        logger.exception(
-            "Fallback provider search failed"
-        )
-
-        await message.answer(
-            "⚠️ جستجو با مشکل مواجه شد."
-        )
-
-        return
-
-    if not results:
-
-        await message.answer(
-            (
-                "😕 <b>نتیجه‌ای پیدا نشد.</b>\n\n"
-                f"🔎 {clean(text)}"
-            ),
-            reply_markup=search_watch_kb(
-                lang_of(
-                    message.from_user.id
-                )
-            ),
-        )
-
-        return
-
-    await message.answer(
         (
-            "🎬 <b>نتایج جستجو</b>\n"
-            "━━━━━━━━━━━━━━━━\n\n"
-            f"🔎 «{clean(text)}»\n\n"
-            "👇 سرویس موردنظر را انتخاب کن:"
+            "🔎 <b>برای جستجو</b>\n\n"
+            "از منوی «جستجو و تماشای فیلم» "
+            "استفاده کن."
         ),
-        reply_markup=search_results_kb(
-            results
+        reply_markup=search_watch_kb(
+            lang_of(
+                message.from_user.id
+            )
         ),
     )
 
