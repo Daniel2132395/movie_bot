@@ -1,9 +1,7 @@
 import asyncio
 import logging
 import os
-from datetime import date, datetime
 from threading import Thread
-from urllib.parse import quote_plus
 
 import aiohttp
 from flask import Flask
@@ -13,7 +11,13 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
+
 from dotenv import load_dotenv
 
 from data.imdb_top import IMDB_TOP
@@ -34,16 +38,13 @@ from keyboards import (
 from locales import t
 from recommender import recommend
 
-# ============================================================
-# ADMIN
-# ============================================================
+from movie_db import init_movie_db
 
-from admin import (
-    admin_router,
-    init_admin_db,
-    track_user,
-    track_search,
-    track_usage,
+from providers import (
+    search_movies,
+    get_watch_providers,
+    movie_text,
+    providers_text,
 )
 
 
@@ -66,7 +67,7 @@ TMDB_API_KEY = os.getenv("TMDB_API_KEY", "").strip()
 
 
 # ============================================================
-# FLASK / RENDER
+# FLASK SERVER FOR RENDER
 # ============================================================
 
 app = Flask(__name__)
@@ -108,7 +109,7 @@ def keep_alive():
 
 
 # ============================================================
-# ROUTER
+# BOT / ROUTER
 # ============================================================
 
 router = Router()
@@ -121,9 +122,9 @@ router = Router()
 USER_LANG: dict[int, str] = {}
 
 
-def lang_of(uid: int) -> str:
+def lang_of(user_id: int) -> str:
     return USER_LANG.get(
-        uid,
+        user_id,
         "en",
     )
 
@@ -147,181 +148,6 @@ class TextSearch(StatesGroup):
 
 
 # ============================================================
-# UI FORMATTERS
-# ============================================================
-
-DIVIDER = "━━━━━━━━━━━━━━"
-
-
-def clean_text(value):
-    if value is None:
-        return "—"
-
-    value = str(value).strip()
-
-    if not value:
-        return "—"
-
-    return value
-
-
-def movie_card(
-    title,
-    year=None,
-    imdb=None,
-    rt=None,
-    meta=None,
-    genres=None,
-    lang="en",
-):
-    """
-    خروجی استاندارد اطلاعات فیلم
-    """
-
-    title = clean_text(title)
-
-    lines = [
-        f"🎬 <b>{title}</b>",
-    ]
-
-    if year:
-        lines.append(
-            f"📅 {clean_text(year)}"
-        )
-
-    scores = []
-
-    if imdb is not None:
-        scores.append(
-            f"⭐ IMDb {imdb}"
-        )
-
-    if rt is not None:
-        scores.append(
-            f"🍅 RT {rt}%"
-        )
-
-    if meta is not None:
-        scores.append(
-            f"🎯 Metacritic {meta}"
-        )
-
-    if scores:
-        lines.append(
-            "   ".join(scores)
-        )
-
-    if genres:
-        if isinstance(genres, (list, tuple)):
-            genre_text = ", ".join(
-                str(x)
-                for x in genres
-                if x
-            )
-        else:
-            genre_text = str(genres)
-
-        if genre_text:
-            lines.append(
-                f"🏷 {genre_text}"
-            )
-
-    return "\n".join(lines)
-
-
-def section_header(
-    title,
-    emoji="🎬",
-):
-    return (
-        f"{emoji} <b>{title}</b>\n"
-        f"{DIVIDER}\n"
-    )
-
-
-def footer(lang="en"):
-    if lang == "fa":
-        return (
-            f"\n{DIVIDER}\n"
-            "🎬 <b>MovieBot</b>"
-        )
-
-    return (
-        f"\n{DIVIDER}\n"
-        "🎬 <b>MovieBot</b>"
-    )
-
-
-# ============================================================
-# DATE FORMAT
-# ============================================================
-
-MONTHS_EN = {
-    1: "January",
-    2: "February",
-    3: "March",
-    4: "April",
-    5: "May",
-    6: "June",
-    7: "July",
-    8: "August",
-    9: "September",
-    10: "October",
-    11: "November",
-    12: "December",
-}
-
-
-MONTHS_FA = {
-    1: "ژانویه",
-    2: "فوریه",
-    3: "مارس",
-    4: "آوریل",
-    5: "مه",
-    6: "ژوئن",
-    7: "ژوئیه",
-    8: "اوت",
-    9: "سپتامبر",
-    10: "اکتبر",
-    11: "نوامبر",
-    12: "دسامبر",
-}
-
-
-def format_date(
-    value,
-    lang="en",
-):
-    if not value:
-        return "TBA"
-
-    try:
-
-        dt = datetime.strptime(
-            str(value),
-            "%Y-%m-%d",
-        )
-
-        if lang == "fa":
-
-            return (
-                f"{dt.day} "
-                f"{MONTHS_FA[dt.month]} "
-                f"{dt.year}"
-            )
-
-        return (
-            f"{MONTHS_EN[dt.month]} "
-            f"{dt.day}, "
-            f"{dt.year}"
-        )
-
-    except Exception:
-
-        return str(value)
-
-
-# ============================================================
 # START
 # ============================================================
 
@@ -330,26 +156,10 @@ async def cmd_start(
     message: Message,
     state: FSMContext,
 ):
-
-    user = message.from_user
-
-    if user is None:
-        return
-
-    await track_user(user)
-
-    await track_usage(
-        user.id,
-        "start",
-    )
-
     await state.clear()
 
     await message.answer(
-        t(
-            "choose_lang",
-            "en",
-        ),
+        t("choose_lang", "en"),
         reply_markup=lang_kb(),
     )
 
@@ -363,37 +173,18 @@ async def cmd_cancel(
     message: Message,
     state: FSMContext,
 ):
-
-    user = message.from_user
-
-    if user is None:
-        return
-
-    await track_user(user)
-
-    await track_usage(
-        user.id,
-        "cancel",
-    )
-
     await state.clear()
 
     lang = lang_of(
-        user.id
+        message.from_user.id
     )
 
     await message.answer(
-        t(
-            "cancelled",
-            lang,
-        )
+        t("cancelled", lang)
     )
 
     await message.answer(
-        t(
-            "welcome",
-            lang,
-        ),
+        t("welcome", lang),
         reply_markup=main_menu_kb(lang),
     )
 
@@ -409,28 +200,19 @@ async def set_lang(
     call: CallbackQuery,
     state: FSMContext,
 ):
-
-    user = call.from_user
-
-    await track_user(user)
-
-    await track_usage(
-        user.id,
-        "language_change",
-    )
-
     lang = call.data.split(
         ":",
         1,
     )[1]
 
-    USER_LANG[user.id] = lang
+    USER_LANG[
+        call.from_user.id
+    ] = lang
+
+    await state.clear()
 
     await call.message.edit_text(
-        t(
-            "welcome",
-            lang,
-        ),
+        t("welcome", lang),
         reply_markup=main_menu_kb(lang),
     )
 
@@ -444,27 +226,14 @@ async def menu_home(
     call: CallbackQuery,
     state: FSMContext,
 ):
-
-    user = call.from_user
-
-    await track_user(user)
-
-    await track_usage(
-        user.id,
-        "home",
-    )
-
     await state.clear()
 
     lang = lang_of(
-        user.id
+        call.from_user.id
     )
 
     await call.message.edit_text(
-        t(
-            "welcome",
-            lang,
-        ),
+        t("welcome", lang),
         reply_markup=main_menu_kb(lang),
     )
 
@@ -477,29 +246,73 @@ async def menu_home(
 async def menu_lang(
     call: CallbackQuery,
 ):
-
-    user = call.from_user
-
-    await track_user(user)
-
-    await track_usage(
-        user.id,
-        "language_menu",
-    )
-
     lang = lang_of(
-        user.id
+        call.from_user.id
     )
 
     await call.message.edit_text(
-        t(
-            "choose_lang",
-            lang,
-        ),
+        t("choose_lang", lang),
         reply_markup=lang_kb(),
     )
 
     await call.answer()
+
+
+# ============================================================
+# CLEAN MOVIE FORMAT
+# ============================================================
+
+def format_movie_card(
+    title,
+    year,
+    kind,
+    imdb,
+    rt,
+    meta,
+    rank=None,
+    lang="fa",
+):
+    if kind == "series":
+        kind_text = (
+            "سریال"
+            if lang == "fa"
+            else "Series"
+        )
+    else:
+        kind_text = (
+            "فیلم"
+            if lang == "fa"
+            else "Movie"
+        )
+
+    if rt is None:
+        rt_text = "—"
+    else:
+        rt_text = f"{rt}%"
+
+    if meta is None:
+        meta_text = "—"
+    else:
+        meta_text = str(meta)
+
+    if rank == 1:
+        rank_icon = "🥇"
+    elif rank == 2:
+        rank_icon = "🥈"
+    elif rank == 3:
+        rank_icon = "🥉"
+    elif rank:
+        rank_icon = f"{rank}️⃣"
+    else:
+        rank_icon = "🎬"
+
+    return (
+        f"{rank_icon} <b>{title}</b>\n"
+        f"📅 {year} • {kind_text}\n"
+        f"⭐ IMDb {imdb}   "
+        f"🍅 RT {rt_text}\n"
+        f"🎯 Metacritic {meta_text}"
+    )
 
 
 # ============================================================
@@ -512,63 +325,55 @@ async def menu_lang(
 async def top250(
     call: CallbackQuery,
 ):
-
-    user = call.from_user
-
-    await track_user(user)
-
-    await track_usage(
-        user.id,
-        "top250",
-    )
-
     lang = lang_of(
-        user.id
+        call.from_user.id
     )
 
     sorted_list = sorted(
         IMDB_TOP,
-        key=lambda r: -r[4],
+        key=lambda row: -float(row[4]),
     )
+
+    if lang == "fa":
+        header = (
+            "🏆 <b>برترین‌های IMDb</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+        )
+    else:
+        header = (
+            "🏆 <b>Top IMDb Movies & Series</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+        )
 
     cards = []
 
-    for i, r in enumerate(
-        sorted_list[:25],
+    # فقط 20 مورد برای خروجی تمیز و خوانا
+    for index, row in enumerate(
+        sorted_list[:20],
         1,
     ):
-
-        card = movie_card(
-            title=r[1],
-            year=r[2],
-            imdb=r[4],
-            rt=r[5],
-            meta=r[6],
-            lang=lang,
-        )
-
         cards.append(
-            f"<b>{i}.</b>\n{card}"
+            format_movie_card(
+                title=row[1],
+                year=row[2],
+                kind=row[3],
+                imdb=row[4],
+                rt=row[5],
+                meta=row[6],
+                rank=index,
+                lang=lang,
+            )
         )
 
-    if lang == "fa":
-
-        header = section_header(
-            "برترین فیلم‌ها",
-            "🏆",
-        )
-
-    else:
-
-        header = section_header(
-            "Top IMDb Movies",
-            "🏆",
-        )
+    footer = (
+        "\n\n━━━━━━━━━━━━━━━━\n"
+        "🎬 <b>MovieBot</b>"
+    )
 
     text = (
         header
         + "\n\n".join(cards)
-        + footer(lang)
+        + footer
     )
 
     await call.message.edit_text(
@@ -580,7 +385,7 @@ async def top250(
 
 
 # ============================================================
-# GENRE
+# GENRES
 # ============================================================
 
 @router.callback_query(
@@ -589,25 +394,12 @@ async def top250(
 async def menu_genre(
     call: CallbackQuery,
 ):
-
-    user = call.from_user
-
-    await track_user(user)
-
-    await track_usage(
-        user.id,
-        "genre_menu",
-    )
-
     lang = lang_of(
-        user.id
+        call.from_user.id
     )
 
     await call.message.edit_text(
-        t(
-            "pick_genre",
-            lang,
-        ),
+        t("pick_genre", lang),
         reply_markup=genre_kb(lang),
     )
 
@@ -620,18 +412,8 @@ async def menu_genre(
 async def show_genre(
     call: CallbackQuery,
 ):
-
-    user = call.from_user
-
-    await track_user(user)
-
-    await track_search(
-        user.id,
-        "genre",
-    )
-
     lang = lang_of(
-        user.id
+        call.from_user.id
     )
 
     genre = call.data.split(
@@ -641,18 +423,16 @@ async def show_genre(
 
     items = []
 
-    for r in IMDB_TOP:
-
-        if genre in r[7]:
-
+    for row in IMDB_TOP:
+        if genre in row[7]:
             items.append(
                 (
-                    r[1],
-                    r[2],
-                    r[3],
-                    r[4],
-                    r[5],
-                    r[6],
+                    row[1],
+                    row[2],
+                    row[3],
+                    row[4],
+                    row[5],
+                    row[6],
                 )
             )
 
@@ -668,7 +448,6 @@ async def show_genre(
         genre,
         [],
     ):
-
         items.append(
             (
                 title,
@@ -681,62 +460,58 @@ async def show_genre(
         )
 
     seen = set()
-    uniq = []
+    unique_items = []
 
     for item in sorted(
         items,
-        key=lambda x: -x[3],
+        key=lambda x: -float(x[3]),
     ):
+        title = item[0]
 
-        if item[0] not in seen:
+        if title not in seen:
+            seen.add(title)
+            unique_items.append(item)
 
-            seen.add(
-                item[0]
-            )
-
-            uniq.append(
-                item
-            )
-
-    uniq = uniq[:15]
+    unique_items = unique_items[:15]
 
     cards = []
 
-    for i, row in enumerate(
-        uniq,
+    for index, row in enumerate(
+        unique_items,
         1,
     ):
-
         cards.append(
-            f"<b>{i}.</b>\n"
-            + movie_card(
+            format_movie_card(
                 title=row[0],
                 year=row[1],
+                kind=row[2],
                 imdb=row[3],
                 rt=row[4],
                 meta=row[5],
+                rank=index,
                 lang=lang,
             )
         )
 
     if lang == "fa":
-
-        header = section_header(
-            f"فیلم‌های {genre}",
-            "🎬",
+        header = (
+            f"🎭 <b>{genre}</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
         )
-
     else:
-
-        header = section_header(
-            f"{genre} Movies",
-            "🎬",
+        header = (
+            f"🎭 <b>{genre}</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
         )
 
     text = (
         header
-        + "\n\n".join(cards)
-        + footer(lang)
+        + (
+            "\n\n".join(cards)
+            if cards
+            else "😕 موردی پیدا نشد."
+        )
+        + "\n\n━━━━━━━━━━━━━━━━"
     )
 
     await call.message.edit_text(
@@ -757,23 +532,9 @@ async def show_genre(
 async def upcoming(
     call: CallbackQuery,
 ):
-
-    user = call.from_user
-
-    await track_user(user)
-
-    await track_usage(
-        user.id,
-        "upcoming",
-    )
-
     lang = lang_of(
-        user.id
+        call.from_user.id
     )
-
-    # --------------------------------------------------------
-    # TMDB LIVE
-    # --------------------------------------------------------
 
     if TMDB_API_KEY:
 
@@ -782,95 +543,64 @@ async def upcoming(
             async with aiohttp.ClientSession() as session:
 
                 url = (
-                    "https://api.themovied.org/3/movie/upcoming"
-                    f"?api_key={TMDB_API_KEY}"
-                    f"&language={'fa' if lang == 'fa' else 'en'}-US"
+                    "https://api.themoviedb.org/3/movie/upcoming"
                 )
 
-                # اصلاح دامنه
-                url = url.replace(
-                    "api.themov.org",
-                    "api.themoviedb.org",
-                )
+                params = {
+                    "api_key": TMDB_API_KEY,
+                    "language": (
+                        "fa-IR"
+                        if lang == "fa"
+                        else "en-US"
+                    ),
+                }
 
                 async with session.get(
                     url,
+                    params=params,
                     timeout=10,
                 ) as response:
 
                     data = await response.json()
 
-            today = date.today()
-
-            movies = []
-
-            for movie in data.get(
+            movies = data.get(
                 "results",
                 [],
-            ):
+            )
 
-                release = movie.get(
-                    "release_date"
+            cards = []
+
+            for movie in movies[:15]:
+
+                title = (
+                    movie.get("title")
+                    or movie.get(
+                        "original_title"
+                    )
+                    or "Unknown"
                 )
 
-                if not release:
-                    continue
+                date = movie.get(
+                    "release_date"
+                ) or "TBA"
 
-                try:
-
-                    release_date = datetime.strptime(
-                        release,
-                        "%Y-%m-%d",
-                    ).date()
-
-                except Exception:
-
-                    continue
-
-                # فقط فیلم‌های امروز به بعد
-                if release_date >= today:
-
-                    movies.append(
-                        movie
-                    )
-
-            movies = movies[:15]
+                cards.append(
+                    f"🎬 <b>{title}</b>\n"
+                    f"📅 {date}"
+                )
 
             if lang == "fa":
 
-                header = section_header(
-                    "فیلم‌های در انتظار اکران",
-                    "📅",
+                header = (
+                    "📅 <b>در انتظار اکران</b>\n"
+                    "━━━━━━━━━━━━━━━━\n\n"
                 )
 
             else:
 
-                header = section_header(
-                    "Upcoming Movies",
-                    "📅",
-                )
-
-            cards = []
-
-            for i, movie in enumerate(
-                movies,
-                1,
-            ):
-
-                title = (
-                    movie.get("title")
-                    or movie.get("original_title")
-                    or "Unknown"
-                )
-
-                release = movie.get(
-                    "release_date"
-                )
-
-                cards.append(
-                    f"<b>{i}.</b> "
-                    f"<b>{clean_text(title)}</b>\n"
-                    f"📅 {format_date(release, lang)}"
+                header = (
+                    "📅 <b>Upcoming Releases</b>\n"
+                    "━━━━━━━━━━━━━━━━\n\n"
                 )
 
             if cards:
@@ -878,26 +608,16 @@ async def upcoming(
                 text = (
                     header
                     + "\n\n".join(cards)
-                    + footer(lang)
+                    + "\n\n━━━━━━━━━━━━━━━━\n"
+                    "🎬 <b>MovieBot</b>"
                 )
 
             else:
 
-                if lang == "fa":
-
-                    text = (
-                        header
-                        + "در حال حاضر فیلمی برای نمایش پیدا نشد."
-                        + footer(lang)
-                    )
-
-                else:
-
-                    text = (
-                        header
-                        + "No upcoming movies were found."
-                        + footer(lang)
-                    )
+                text = (
+                    header
+                    + "😕 فیلمی پیدا نشد."
+                )
 
             await call.message.edit_text(
                 text[:4090],
@@ -914,70 +634,38 @@ async def upcoming(
                 "TMDB upcoming request failed"
             )
 
-    # --------------------------------------------------------
-    # STATIC FALLBACK
-    # --------------------------------------------------------
+    # Fallback داخلی
 
     if lang == "fa":
 
-        header = section_header(
-            "فیلم‌های در انتظار اکران",
-            "📅",
+        header = (
+            "📅 <b>در انتظار اکران</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
         )
 
     else:
 
-        header = section_header(
-            "Upcoming Movies",
-            "📅",
+        header = (
+            "📅 <b>Upcoming Releases</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
         )
-
-    today = date.today()
 
     cards = []
 
-    for title, release, desc in UPCOMING:
-
-        try:
-
-            release_date = datetime.strptime(
-                str(release),
-                "%Y-%m-%d",
-            ).date()
-
-        except Exception:
-
-            release_date = None
-
-        if release_date and release_date < today:
-            continue
+    for title, date, desc in UPCOMING:
 
         cards.append(
-            f"🎬 <b>{clean_text(title)}</b>\n"
-            f"📅 {format_date(release, lang)}"
+            f"🎬 <b>{title}</b>\n"
+            f"📅 {date}\n"
+            f"📝 {desc}"
         )
 
-    cards = cards[:15]
-
-    if cards:
-
-        text = (
-            header
-            + "\n\n".join(cards)
-            + footer(lang)
-        )
-
-    else:
-
-        text = (
-            header
-            + (
-                "در حال حاضر موردی وجود ندارد."
-                if lang == "fa"
-                else "No upcoming movies found."
-            )
-            + footer(lang)
-        )
+    text = (
+        header
+        + "\n\n".join(cards)
+        + "\n\n━━━━━━━━━━━━━━━━\n"
+        "🎬 <b>MovieBot</b>"
+    )
 
     await call.message.edit_text(
         text[:4090],
@@ -988,123 +676,7 @@ async def upcoming(
 
 
 # ============================================================
-# TMDB PERSON
-# ============================================================
-
-async def _tmdb_person_credits(
-    name: str,
-    lang: str,
-):
-
-    if not TMDB_API_KEY:
-        return None
-
-    encoded_name = quote_plus(
-        name
-    )
-
-    async with aiohttp.ClientSession() as session:
-
-        search_url = (
-            "https://api.themoviedb.org/3/search/person"
-            f"?api_key={TMDB_API_KEY}"
-            f"&query={encoded_name}"
-        )
-
-        async with session.get(
-            search_url,
-            timeout=10,
-        ) as response:
-
-            data = await response.json()
-
-        results = data.get(
-            "results",
-            [],
-        )
-
-        if not results:
-            return None
-
-        person_id = results[0]["id"]
-
-        credits_url = (
-            f"https://api.themoviedb.org/3/person/"
-            f"{person_id}/movie_credits"
-            f"?api_key={TMDB_API_KEY}"
-        )
-
-        async with session.get(
-            credits_url,
-            timeout=10,
-        ) as response:
-
-            credits = await response.json()
-
-        cast = sorted(
-            credits.get(
-                "cast",
-                [],
-            )
-            + credits.get(
-                "crew",
-                [],
-            ),
-            key=lambda movie: movie.get(
-                "popularity",
-                0,
-            ),
-            reverse=True,
-        )
-
-        result = []
-
-        seen = set()
-
-        for movie in cast:
-
-            title = movie.get(
-                "title"
-            )
-
-            if not title:
-                continue
-
-            if title in seen:
-                continue
-
-            seen.add(
-                title
-            )
-
-            release = (
-                movie.get(
-                    "release_date"
-                )
-                or ""
-            )
-
-            year = (
-                release[:4]
-                if release
-                else "TBA"
-            )
-
-            result.append(
-                (
-                    title,
-                    year,
-                )
-            )
-
-            if len(result) >= 10:
-                break
-
-        return result
-
-
-# ============================================================
-# ACTOR
+# ACTOR SEARCH
 # ============================================================
 
 @router.callback_query(
@@ -1114,25 +686,12 @@ async def ask_actor(
     call: CallbackQuery,
     state: FSMContext,
 ):
-
-    user = call.from_user
-
-    await track_user(user)
-
-    await track_usage(
-        user.id,
-        "actor_menu",
-    )
-
     lang = lang_of(
-        user.id
+        call.from_user.id
     )
 
     await call.message.edit_text(
-        t(
-            "ask_actor_name",
-            lang,
-        ),
+        t("ask_actor_name", lang),
         reply_markup=back_kb(lang),
     )
 
@@ -1150,97 +709,168 @@ async def do_actor_search(
     message: Message,
     state: FSMContext,
 ):
-
-    user = message.from_user
-
-    if user is None:
-        return
-
-    await track_user(user)
-
-    await track_search(
-        user.id,
-        "actor",
-    )
-
     lang = lang_of(
-        user.id
+        message.from_user.id
     )
 
-    query = message.text.strip()
+    name = message.text.strip().lower()
 
-    result = ACTORS.get(
-        query.lower()
-    )
+    result = ACTORS.get(name)
 
     if not result and TMDB_API_KEY:
 
-        result = await _tmdb_person_credits(
-            query,
-            lang,
+        result = await tmdb_person_credits(
+            message.text.strip()
         )
 
     if result:
 
-        header = section_header(
-            f"آثار {query}"
-            if lang == "fa"
-            else f"Works by {query}",
-            "🎭",
-        )
+        cards = []
 
-        lines = []
-
-        for i, item in enumerate(
+        for index, title in enumerate(
             result[:10],
             1,
         ):
-
-            if isinstance(
-                item,
-                tuple,
-            ):
-
-                title = item[0]
-                year = item[1]
-
-            else:
-
-                title = str(item)
-                year = None
-
-            lines.append(
-                f"<b>{i}.</b> "
-                f"{clean_text(title)}"
-                + (
-                    f"\n📅 {year}"
-                    if year
-                    else ""
-                )
+            cards.append(
+                f"{index}. 🎬 {title}"
             )
 
         text = (
-            header
-            + "\n\n".join(lines)
-            + footer(lang)
+            f"🎭 <b>{message.text.strip()}</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            + "\n\n".join(cards)
         )
 
         await message.answer(
-            text[:4090],
+            text,
             reply_markup=back_kb(lang),
         )
 
     else:
 
         await message.answer(
-            t(
-                "not_found_local",
-                lang,
-            ),
+            "😕 <b>بازیگر پیدا نشد.</b>",
             reply_markup=back_kb(lang),
         )
 
     await state.clear()
+
+
+# ============================================================
+# TMDB PERSON
+# ============================================================
+
+async def tmdb_person_credits(
+    name: str,
+):
+
+    if not TMDB_API_KEY:
+        return None
+
+    try:
+
+        async with aiohttp.ClientSession() as session:
+
+            search_url = (
+                "https://api.themoviedb.org/3/search/person"
+            )
+
+            search_params = {
+                "api_key": TMDB_API_KEY,
+                "query": name,
+            }
+
+            async with session.get(
+                search_url,
+                params=search_params,
+                timeout=10,
+            ) as response:
+
+                data = await response.json()
+
+            results = data.get(
+                "results",
+                [],
+            )
+
+            if not results:
+                return None
+
+            person_id = results[0].get(
+                "id"
+            )
+
+            if not person_id:
+                return None
+
+            credits_url = (
+                f"https://api.themoviedb.org/3/person/"
+                f"{person_id}/movie_credits"
+            )
+
+            credits_params = {
+                "api_key": TMDB_API_KEY,
+            }
+
+            async with session.get(
+                credits_url,
+                params=credits_params,
+                timeout=10,
+            ) as response:
+
+                credits = await response.json()
+
+            movies = (
+                credits.get("cast", [])
+                + credits.get("crew", [])
+            )
+
+            movies.sort(
+                key=lambda x: x.get(
+                    "popularity",
+                    0,
+                ),
+                reverse=True,
+            )
+
+            result = []
+
+            for movie in movies[:10]:
+
+                title = (
+                    movie.get("title")
+                    or movie.get(
+                        "original_title"
+                    )
+                )
+
+                year = (
+                    movie.get(
+                        "release_date"
+                    )
+                    or ""
+                )[:4]
+
+                if title:
+
+                    if year:
+                        result.append(
+                            f"{title} ({year})"
+                        )
+                    else:
+                        result.append(
+                            title
+                        )
+
+            return result
+
+    except Exception:
+
+        logger.exception(
+            "TMDB person search failed"
+        )
+
+        return None
 
 
 # ============================================================
@@ -1254,25 +884,12 @@ async def ask_director(
     call: CallbackQuery,
     state: FSMContext,
 ):
-
-    user = call.from_user
-
-    await track_user(user)
-
-    await track_usage(
-        user.id,
-        "director_menu",
-    )
-
     lang = lang_of(
-        user.id
+        call.from_user.id
     )
 
     await call.message.edit_text(
-        t(
-            "ask_director_name",
-            lang,
-        ),
+        t("ask_director_name", lang),
         reply_markup=back_kb(lang),
     )
 
@@ -1290,93 +907,47 @@ async def do_director_search(
     message: Message,
     state: FSMContext,
 ):
-
-    user = message.from_user
-
-    if user is None:
-        return
-
-    await track_user(user)
-
-    await track_search(
-        user.id,
-        "director",
-    )
-
     lang = lang_of(
-        user.id
+        message.from_user.id
     )
 
-    query = message.text.strip()
+    name = message.text.strip().lower()
 
-    result = DIRECTORS.get(
-        query.lower()
-    )
+    result = DIRECTORS.get(name)
 
     if not result and TMDB_API_KEY:
 
-        result = await _tmdb_person_credits(
-            query,
-            lang,
+        result = await tmdb_person_credits(
+            message.text.strip()
         )
 
     if result:
 
-        header = section_header(
-            f"آثار {query}"
-            if lang == "fa"
-            else f"Works by {query}",
-            "🎬",
-        )
+        cards = []
 
-        lines = []
-
-        for i, item in enumerate(
+        for index, title in enumerate(
             result[:10],
             1,
         ):
-
-            if isinstance(
-                item,
-                tuple,
-            ):
-
-                title = item[0]
-                year = item[1]
-
-            else:
-
-                title = str(item)
-                year = None
-
-            lines.append(
-                f"<b>{i}.</b> "
-                f"{clean_text(title)}"
-                + (
-                    f"\n📅 {year}"
-                    if year
-                    else ""
-                )
+            cards.append(
+                f"{index}. 🎬 {title}"
             )
 
         text = (
-            header
-            + "\n\n".join(lines)
-            + footer(lang)
+            f"🎬 <b>{message.text.strip()}</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            + "\n\n".join(cards)
         )
 
         await message.answer(
-            text[:4090],
+            text,
             reply_markup=back_kb(lang),
         )
 
     else:
 
         await message.answer(
-            t(
-                "not_found_local",
-                lang,
-            ),
+            "😕 <b>کارگردان پیدا نشد.</b>",
             reply_markup=back_kb(lang),
         )
 
@@ -1394,25 +965,12 @@ async def ask_compare(
     call: CallbackQuery,
     state: FSMContext,
 ):
-
-    user = call.from_user
-
-    await track_user(user)
-
-    await track_usage(
-        user.id,
-        "compare_menu",
-    )
-
     lang = lang_of(
-        user.id
+        call.from_user.id
     )
 
     await call.message.edit_text(
-        t(
-            "ask_movie_name",
-            lang,
-        ),
+        t("ask_movie_name", lang),
         reply_markup=back_kb(lang),
     )
 
@@ -1430,21 +988,8 @@ async def do_compare(
     message: Message,
     state: FSMContext,
 ):
-
-    user = message.from_user
-
-    if user is None:
-        return
-
-    await track_user(user)
-
-    await track_search(
-        user.id,
-        "movie_compare",
-    )
-
     lang = lang_of(
-        user.id
+        message.from_user.id
     )
 
     query = message.text.strip()
@@ -1453,30 +998,17 @@ async def do_compare(
     rt = None
     meta = None
 
-    # --------------------------------------------------------
-    # LOCAL
-    # --------------------------------------------------------
+    for row in IMDB_TOP:
 
-    for r in IMDB_TOP:
+        if row[1].lower() == query.lower():
 
-        if r[1].lower() == query.lower():
-
-            imdb = r[4]
-            rt = r[5]
-            meta = r[6]
+            imdb = row[4]
+            rt = row[5]
+            meta = row[6]
 
             break
 
-    # --------------------------------------------------------
-    # OMDB
-    # --------------------------------------------------------
-
-    if (
-        imdb is None
-        and rt is None
-        and meta is None
-        and OMDB_API_KEY
-    ):
+    if imdb is None and OMDB_API_KEY:
 
         try:
 
@@ -1484,20 +1016,22 @@ async def do_compare(
 
                 url = (
                     "https://www.omdbapi.com/"
-                    f"?apikey={OMDB_API_KEY}"
-                    f"&t={quote_plus(query)}"
                 )
+
+                params = {
+                    "apikey": OMDB_API_KEY,
+                    "t": query,
+                }
 
                 async with session.get(
                     url,
+                    params=params,
                     timeout=10,
                 ) as response:
 
                     data = await response.json()
 
-            if data.get(
-                "Response"
-            ) == "True":
+            if data.get("Response") == "True":
 
                 for source in data.get(
                     "Ratings",
@@ -1509,26 +1043,30 @@ async def do_compare(
                     )
 
                     value = source.get(
-                        "Value"
+                        "Value",
+                        "",
                     )
 
-                    if not value:
-                        continue
-
-                    if source_name == "Internet Movie Database":
+                    if source_name == (
+                        "Internet Movie Database"
+                    ):
 
                         imdb = value.split(
                             "/"
                         )[0]
 
-                    elif source_name == "Rotten Tomatoes":
+                    elif source_name == (
+                        "Rotten Tomatoes"
+                    ):
 
                         rt = value.replace(
                             "%",
                             "",
                         )
 
-                    elif source_name == "Metacritic":
+                    elif source_name == (
+                        "Metacritic"
+                    ):
 
                         meta = value.split(
                             "/"
@@ -1537,26 +1075,8 @@ async def do_compare(
         except Exception:
 
             logger.exception(
-                "OMDb request failed"
+                "OMDb comparison failed"
             )
-
-    # --------------------------------------------------------
-    # OUTPUT
-    # --------------------------------------------------------
-
-    if lang == "fa":
-
-        header = section_header(
-            f"مقایسه «{query}»",
-            "⚖️",
-        )
-
-    else:
-
-        header = section_header(
-            f"Rating for “{query}”",
-            "⚖️",
-        )
 
     if (
         imdb is None
@@ -1564,25 +1084,24 @@ async def do_compare(
         and meta is None
     ):
 
-        body = t(
-            "not_found_local",
-            lang,
+        text = (
+            f"🔎 <b>{query}</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "😕 اطلاعاتی برای این فیلم پیدا نشد."
         )
 
     else:
 
-        body = (
-            f"⭐ <b>IMDb</b>       {imdb or '—'}/10\n"
-            f"🍅 <b>Rotten Tomatoes</b>   {rt or '—'}%\n"
-            f"🎯 <b>Metacritic</b>   {meta or '—'}/100"
+        text = (
+            f"🎬 <b>{query}</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            f"⭐ IMDb: <b>{imdb or '—'}</b>/10\n"
+            f"🍅 Rotten Tomatoes: <b>{rt or '—'}</b>%\n"
+            f"🎯 Metacritic: <b>{meta or '—'}</b>/100"
         )
 
     await message.answer(
-        (
-            header
-            + body
-            + footer(lang)
-        )[:4090],
+        text,
         reply_markup=back_kb(lang),
     )
 
@@ -1590,7 +1109,7 @@ async def do_compare(
 
 
 # ============================================================
-# RECOMMENDATION QUIZ
+# SMART RECOMMENDATION
 # ============================================================
 
 @router.callback_query(
@@ -1600,32 +1119,18 @@ async def start_quiz(
     call: CallbackQuery,
     state: FSMContext,
 ):
-
-    user = call.from_user
-
-    await track_user(user)
-
-    await track_usage(
-        user.id,
-        "recommendation_quiz",
-    )
-
     lang = lang_of(
-        user.id
+        call.from_user.id
     )
+
+    await state.clear()
 
     await call.message.edit_text(
-        t(
-            "start_quiz",
-            lang,
-        )
+        t("start_quiz", lang)
     )
 
     await call.message.answer(
-        t(
-            "q_mood",
-            lang,
-        ),
+        t("q_mood", lang),
         reply_markup=mood_kb(lang),
     )
 
@@ -1644,18 +1149,8 @@ async def quiz_mood(
     call: CallbackQuery,
     state: FSMContext,
 ):
-
-    user = call.from_user
-
-    await track_user(user)
-
-    await track_usage(
-        user.id,
-        "quiz_mood",
-    )
-
     lang = lang_of(
-        user.id
+        call.from_user.id
     )
 
     await state.update_data(
@@ -1666,10 +1161,7 @@ async def quiz_mood(
     )
 
     await call.message.edit_text(
-        t(
-            "q_genre",
-            lang,
-        ),
+        t("q_genre", lang),
         reply_markup=quiz_genre_kb(lang),
     )
 
@@ -1688,18 +1180,8 @@ async def quiz_genre(
     call: CallbackQuery,
     state: FSMContext,
 ):
-
-    user = call.from_user
-
-    await track_user(user)
-
-    await track_usage(
-        user.id,
-        "quiz_genre",
-    )
-
     lang = lang_of(
-        user.id
+        call.from_user.id
     )
 
     await state.update_data(
@@ -1710,10 +1192,7 @@ async def quiz_genre(
     )
 
     await call.message.edit_text(
-        t(
-            "q_mbti",
-            lang,
-        ),
+        t("q_mbti", lang),
         reply_markup=mbti_kb(lang),
     )
 
@@ -1732,18 +1211,8 @@ async def quiz_mbti(
     call: CallbackQuery,
     state: FSMContext,
 ):
-
-    user = call.from_user
-
-    await track_user(user)
-
-    await track_usage(
-        user.id,
-        "quiz_mbti",
-    )
-
     lang = lang_of(
-        user.id
+        call.from_user.id
     )
 
     await state.update_data(
@@ -1754,10 +1223,7 @@ async def quiz_mbti(
     )
 
     await call.message.edit_text(
-        t(
-            "q_liked",
-            lang,
-        )
+        t("q_liked", lang)
     )
 
     await state.set_state(
@@ -1774,21 +1240,8 @@ async def quiz_liked(
     message: Message,
     state: FSMContext,
 ):
-
-    user = message.from_user
-
-    if user is None:
-        return
-
-    await track_user(user)
-
-    await track_usage(
-        user.id,
-        "quiz_liked",
-    )
-
     lang = lang_of(
-        user.id
+        message.from_user.id
     )
 
     text = message.text.strip()
@@ -1797,9 +1250,9 @@ async def quiz_liked(
         []
         if text == "-"
         else [
-            x.strip()
-            for x in text.split(",")
-            if x.strip()
+            item.strip()
+            for item in text.split(",")
+            if item.strip()
         ]
     )
 
@@ -1808,10 +1261,7 @@ async def quiz_liked(
     )
 
     await message.answer(
-        t(
-            "q_disliked",
-            lang,
-        )
+        t("q_disliked", lang)
     )
 
     await state.set_state(
@@ -1826,21 +1276,8 @@ async def quiz_disliked(
     message: Message,
     state: FSMContext,
 ):
-
-    user = message.from_user
-
-    if user is None:
-        return
-
-    await track_user(user)
-
-    await track_usage(
-        user.id,
-        "quiz_disliked",
-    )
-
     lang = lang_of(
-        user.id
+        message.from_user.id
     )
 
     text = message.text.strip()
@@ -1849,17 +1286,15 @@ async def quiz_disliked(
         []
         if text == "-"
         else [
-            x.strip()
-            for x in text.split(",")
-            if x.strip()
+            item.strip()
+            for item in text.split(",")
+            if item.strip()
         ]
     )
 
     await message.answer(
-        t(
-            "analyzing",
-            lang,
-        )
+        "🎬 <b>در حال تحلیل سلیقه شما...</b>\n"
+        "⏳ چند لحظه صبر کنید."
     )
 
     data = await state.get_data()
@@ -1885,57 +1320,314 @@ async def quiz_disliked(
     if not results:
 
         await message.answer(
-            (
-                "نتیجه‌ای پیدا نشد."
-                if lang == "fa"
-                else "No recommendations found."
-            ),
+            "😕 متأسفانه پیشنهاد مناسبی پیدا نشد.",
             reply_markup=back_kb(lang),
         )
 
         await state.clear()
-
         return
-
-    header = section_header(
-        "پیشنهادهای مخصوص شما"
-        if lang == "fa"
-        else "Your Recommendations",
-        "✨",
-    )
 
     cards = []
 
-    for i, item in enumerate(
+    for index, item in enumerate(
         results,
         1,
     ):
 
-        cards.append(
-            f"<b>{i}.</b>\n"
-            + movie_card(
-                title=item["title"],
-                year=item["year"],
-                imdb=item["imdb"],
-                rt=item["rt"],
-                meta=item["meta"],
-                genres=item["genres"],
-                lang=lang,
-            )
+        rt = item.get("rt")
+
+        meta = item.get("meta")
+
+        rt_text = (
+            f"{rt}%"
+            if rt is not None
+            else "—"
         )
 
-    text = (
-        header
+        meta_text = (
+            str(meta)
+            if meta is not None
+            else "—"
+        )
+
+        genres = item.get(
+            "genres",
+            [],
+        )
+
+        genre_text = (
+            ", ".join(genres)
+            if genres
+            else "—"
+        )
+
+        cards.append(
+            f"{index}. 🎬 <b>{item['title']}</b>\n"
+            f"📅 {item['year']}\n"
+            f"🎭 {genre_text}\n"
+            f"⭐ IMDb {item['imdb']}   "
+            f"🍅 RT {rt_text}\n"
+            f"🎯 Metacritic {meta_text}"
+        )
+
+    text_output = (
+        "✨ <b>پیشنهادهای مخصوص شما</b>\n"
+        "━━━━━━━━━━━━━━━━\n\n"
         + "\n\n".join(cards)
-        + footer(lang)
+        + "\n\n━━━━━━━━━━━━━━━━\n"
+        "🎬 <b>MovieBot</b>"
     )
 
     await message.answer(
-        text[:4090],
+        text_output[:4090],
         reply_markup=back_kb(lang),
     )
 
     await state.clear()
+
+
+# ============================================================
+# AUTOMATIC MOVIE SEARCH
+# ============================================================
+
+def movie_result_keyboard(
+    movie_id: int,
+):
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📺 سرویس‌های تماشا",
+                    callback_data=f"providers:{movie_id}",
+                )
+            ]
+        ]
+    )
+
+
+async def send_movie_result(
+    message: Message,
+    movie: dict,
+):
+    title = (
+        movie.get("title")
+        or movie.get(
+            "original_title"
+        )
+        or "Unknown"
+    )
+
+    release_date = (
+        movie.get("release_date")
+        or ""
+    )
+
+    year = (
+        release_date[:4]
+        if release_date
+        else "—"
+    )
+
+    rating = movie.get(
+        "vote_average",
+        0,
+    )
+
+    overview = (
+        movie.get("overview")
+        or "توضیحی برای این فیلم ثبت نشده است."
+    )
+
+    # کوتاه کردن توضیحات
+    if len(overview) > 500:
+        overview = (
+            overview[:497]
+            + "..."
+        )
+
+    text = (
+        "🎬 <b>"
+        + title
+        + "</b>\n"
+        "━━━━━━━━━━━━━━━━\n\n"
+        f"📅 سال: {year}\n"
+        f"⭐ امتیاز: {float(rating):.1f}/10\n\n"
+        f"📝 {overview}\n\n"
+        "━━━━━━━━━━━━━━━━"
+    )
+
+    await message.answer(
+        text[:4090],
+        reply_markup=movie_result_keyboard(
+            movie.get("id")
+        ),
+    )
+
+
+@router.callback_query(
+    F.data.startswith("providers:")
+)
+async def show_providers(
+    call: CallbackQuery,
+):
+    try:
+
+        movie_id = int(
+            call.data.split(
+                ":",
+                1,
+            )[1]
+        )
+
+    except (
+        ValueError,
+        IndexError,
+    ):
+
+        await call.answer(
+            "شناسه فیلم نامعتبر است.",
+            show_alert=True,
+        )
+
+        return
+
+    await call.answer(
+        "🔎 در حال بررسی سرویس‌ها..."
+    )
+
+    providers = await get_watch_providers(
+        movie_id
+    )
+
+    if not providers:
+
+        await call.message.answer(
+            "📺 <b>سرویس تماشا</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "😕 برای این فیلم سرویس قابل نمایش "
+            "پیدا نشد."
+        )
+
+        return
+
+    text = providers_text(
+        providers
+    )
+
+    text = (
+        "📺 <b>گزینه‌های تماشا</b>\n"
+        "━━━━━━━━━━━━━━━━\n\n"
+        + text
+        + "\n\n━━━━━━━━━━━━━━━━"
+    )
+
+    await call.message.answer(
+        text[:4090]
+    )
+
+
+@router.message()
+async def automatic_movie_search(
+    message: Message,
+    state: FSMContext,
+):
+    """
+    جستجوی خودکار فیلم.
+
+    کاربر فقط اسم فیلم را ارسال می‌کند.
+    """
+
+    if not message.text:
+        return
+
+    text = message.text.strip()
+
+    if len(text) < 2:
+        return
+
+    # اگر کاربر در یک State است،
+    # handler مخصوص آن State باید پیام را بگیرد.
+    current_state = await state.get_state()
+
+    if current_state:
+        return
+
+    # دستورات را جستجو نکن
+    if text.startswith("/"):
+        return
+
+    lang = lang_of(
+        message.from_user.id
+    )
+
+    if not TMDB_API_KEY:
+
+        await message.answer(
+            "⚠️ <b>جستجوی خودکار فعال نیست.</b>\n\n"
+            "TMDB_API_KEY در Environment Variables "
+            "تنظیم نشده است."
+        )
+
+        return
+
+    searching = await message.answer(
+        "🔎 <b>در حال جستجو...</b>\n"
+        "⏳ یک لحظه صبر کن."
+    )
+
+    try:
+
+        results = await search_movies(
+            text,
+            language=(
+                "fa-IR"
+                if lang == "fa"
+                else "en-US"
+            ),
+        )
+
+        # اگر فارسی نتیجه نداد، انگلیسی
+        if not results:
+
+            results = await search_movies(
+                text,
+                language="en-US",
+            )
+
+        if not results:
+
+            await searching.edit_text(
+                "😕 <b>فیلم پیدا نشد.</b>\n\n"
+                "نام فیلم را دقیق‌تر بنویس."
+            )
+
+            return
+
+        # بهترین نتیجه
+        movie = results[0]
+
+        await searching.delete()
+
+        await send_movie_result(
+            message,
+            movie,
+        )
+
+    except Exception:
+
+        logger.exception(
+            "Automatic movie search failed"
+        )
+
+        try:
+
+            await searching.edit_text(
+                "❌ خطایی هنگام جستجوی فیلم رخ داد.\n"
+                "لطفاً دوباره امتحان کن."
+            )
+
+        except Exception:
+            pass
 
 
 # ============================================================
@@ -1944,21 +1636,24 @@ async def quiz_disliked(
 
 async def main():
 
-    if (
-        not BOT_TOKEN
-        or ":" not in BOT_TOKEN
-    ):
+    if not BOT_TOKEN:
 
         raise SystemExit(
-            "BOT_TOKEN is missing/invalid. "
+            "BOT_TOKEN is missing. "
             "Set BOT_TOKEN in Render Environment Variables."
         )
 
-    # Initialize admin DB
-    init_admin_db()
+    if ":" not in BOT_TOKEN:
+
+        raise SystemExit(
+            "BOT_TOKEN appears to be invalid."
+        )
+
+    # ساخت دیتابیس فیلم
+    init_movie_db()
 
     logger.info(
-        "Admin database initialized."
+        "Starting MovieBot..."
     )
 
     bot = Bot(
@@ -1969,17 +1664,11 @@ async def main():
         storage=MemoryStorage()
     )
 
-    # MovieBot
     dp.include_router(
         router
     )
 
-    # Admin
-    dp.include_router(
-        admin_router
-    )
-
-    # Polling
+    # polling
     await bot.delete_webhook(
         drop_pending_updates=False
     )
@@ -2017,5 +1706,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
 
         logger.info(
-            "Bot stopped manually."
+            "MovieBot stopped manually."
     )
