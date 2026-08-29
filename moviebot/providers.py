@@ -20,8 +20,8 @@ logger = logging.getLogger("MovieBot.providers")
 
 TIMEOUT = aiohttp.ClientTimeout(total=12)
 
-# فقط دامنه‌هایی که خودشان سرویس/صفحه عمومی ارائه می‌کنند.
-# لینک مستقیم فایل ویدئو ساخته نمی‌شود.
+# فقط دامنه‌هایی که خودشان سرویس/صفحه عمومی و قانونی ارائه می‌کنند.
+# لینک مستقیم فایل ویدئو ساخته نمی‌شود؛ فقط لینک صفحه‌ی جستجوی رسمی سرویس.
 OFFICIAL_PROVIDERS = {
     "filimo": {
         "name": "فیلیمو",
@@ -33,17 +33,39 @@ OFFICIAL_PROVIDERS = {
         "domain": "namava.ir",
         "search_url": "https://www.namava.ir/search?search={query}",
     },
-    "aparat": {
-        "name": "آپارات",
-        "domain": "aparat.com",
-        "search_url": "https://www.aparat.com/result/{query}",
-    },
     "filmnet": {
         "name": "فیلم‌نت",
         "domain": "filmnet.ir",
         "search_url": "https://filmnet.ir/search/{query}",
     },
+    "tamasha": {
+        "name": "تماشا",
+        "domain": "tamasha.com",
+        "search_url": "https://www.tamasha.com/search?term={query}",
+    },
+    "aparat": {
+        "name": "آپارات",
+        "domain": "aparat.com",
+        "search_url": "https://www.aparat.com/result/{query}",
+    },
+    # موارد جدید اضافه شده:
+    "movielandz": {
+        "name": "مووی‌لندز",
+        "domain": "movielandz.com",
+        "search_url": "https://movielandz.com/?s={query}",
+    },
+    "melofilm": {
+        "name": "ملوفیلم",
+        "domain": "melofilm.ir",
+        "search_url": "https://melofilm.ir/?s={query}",
+    },
+    "zardfilm": {
+        "name": "زردفیلم",
+        "domain": "zardfilm.in",
+        "search_url": "https://zardfilm.in/?s={query}",
+    },
 }
+
 
 
 # ============================================================
@@ -151,15 +173,13 @@ async def search_iranian_sources(
     query: str,
 ):
     """
-    جستجوی منابع ایرانی.
+    جستجوی منابع ایرانیِ قانونی.
 
     نکته:
-    صرف وجود عنوان در یک سایت به معنی مجازبودن
-    انتشار آن نیست؛ بنابراین وضعیت «قانونی»
-    از خودمان حدس زده نمی‌شود.
-
-    این تابع لینک صفحه جستجوی عمومی سرویس را
-    برمی‌گرداند، نه لینک فایل ویدئو.
+    این تابع فقط لینک صفحه‌ی جستجوی عمومی هر سرویس را
+    برمی‌گرداند، نه لینک فایل ویدئو. اطلاعات دقیق دوبله/
+    زیرنویس/رایگان یا اشتراکی‌بودن باید در خودِ صفحه‌ی
+    سرویس بررسی شود، چون این موارد برای هر عنوان فرق دارد.
     """
 
     query = (
@@ -170,9 +190,6 @@ async def search_iranian_sources(
         return []
 
     results = []
-
-    # صفحات رسمی جستجو.
-    # دسترسی به محتوا همچنان توسط خود سرویس کنترل می‌شود.
 
     for key in OFFICIAL_PROVIDERS:
 
@@ -227,11 +244,11 @@ def providers_text(
 
     if not providers:
         return (
-            "😕 <b>منبع ایرانی پیدا نشد.</b>"
+            "😕 <b>منبع قانونی پیدا نشد.</b>"
         )
 
     lines = [
-        "🇮🇷 <b>منابع ایرانی</b>",
+        "🇮🇷 <b>پلتفرم‌های قانونی</b>",
         "━━━━━━━━━━━━━━━━",
     ]
 
@@ -244,9 +261,12 @@ def providers_text(
             )
         )
 
+        url = item.get("url", "")
+
         lines.append(
             f"\n🎬 <b>{name}</b>\n"
-            f"   {_badges(item)}"
+            f"   {_badges(item)}\n"
+            f"   🔗 {url}"
         )
 
     return "\n".join(lines)
@@ -380,5 +400,5 @@ __all__ = [
     "provider_search_url",
     "providers_text",
     "movie_text",
+    "OFFICIAL_PROVIDERS",
 ]
-```0
