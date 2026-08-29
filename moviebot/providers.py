@@ -1,9 +1,8 @@
 # providers.py
 # ============================================================
-# MovieBot — Iranian Legal Providers
-# بدون TMDb برای جستجوی فیلم
-# بدون استخراج لینک مستقیم ویدئو
-# فقط لینک صفحه/جستجوی سرویس
+# MovieBot — Official Iranian Provider Search
+# بدون TMDb برای جستجوی سرویس‌ها
+# بدون استخراج فایل ویدئو
 # ============================================================
 
 import logging
@@ -17,8 +16,6 @@ logger = logging.getLogger("MovieBot.providers")
 
 TIMEOUT = aiohttp.ClientTimeout(total=12)
 
-# فقط سرویس‌هایی که قرار است به‌عنوان منبع رسمی استفاده شوند.
-# این کد فایل ویدئو، mp4، m3u8 یا mpd استخراج نمی‌کند.
 OFFICIAL_PROVIDERS = {
     "filimo": {
         "name": "فیلیمو",
@@ -53,51 +50,6 @@ OFFICIAL_PROVIDERS = {
 }
 
 
-# ============================================================
-# HTTP
-# ============================================================
-
-async def _get_text(url: str) -> Optional[str]:
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 "
-            "(compatible; MovieBot/1.0)"
-        )
-    }
-
-    try:
-        async with aiohttp.ClientSession(
-            timeout=TIMEOUT,
-            headers=headers,
-        ) as session:
-
-            async with session.get(
-                url,
-                allow_redirects=True,
-            ) as response:
-
-                if response.status != 200:
-                    logger.info(
-                        "Provider returned HTTP %s: %s",
-                        response.status,
-                        url,
-                    )
-                    return None
-
-                return await response.text()
-
-    except Exception:
-        logger.exception(
-            "Provider request failed: %s",
-            url,
-        )
-        return None
-
-
-# ============================================================
-# SEARCH URL
-# ============================================================
-
 def provider_search_url(
     provider_key: str,
     query: str,
@@ -120,15 +72,9 @@ def provider_search_url(
     )
 
 
-# ============================================================
-# RESULT
-# ============================================================
-
 def _result(
     key: str,
     query: str,
-    *,
-    status: str = "search",
 ):
     provider = OFFICIAL_PROVIDERS[key]
 
@@ -140,9 +86,10 @@ def _result(
             key,
             query,
         ),
-        "status": status,
+        "home_url": provider["home_url"],
 
-        # عمداً اطلاعات ساختگی زبان/هزینه نمی‌سازیم.
+        "status": "official_search",
+
         "dub": False,
         "subtitle": False,
         "free": False,
@@ -150,17 +97,11 @@ def _result(
     }
 
 
-# ============================================================
-# IRANIAN PROVIDERS SEARCH
-# ============================================================
-
 async def search_iranian_sources(
     query: str,
 ):
     """
-    فقط لینک جستجوی رسمی سرویس‌ها را تولید می‌کند.
-
-    هیچ فایل ویدئویی استخراج نمی‌شود.
+    لینک جستجوی رسمی عنوان در سرویس‌ها را برمی‌گرداند.
     """
 
     query = (query or "").strip()
@@ -183,22 +124,16 @@ async def search_iranian_sources(
     return results
 
 
-# ============================================================
-# MOVIE SEARCH
-# ============================================================
-
 async def search_movies(
     query: str,
     language: str = "fa-IR",
     limit: int = 10,
 ):
     """
-    جستجوی فیلم بدون TMDb.
+    جستجو بدون TMDb.
 
-    خروجی به‌صورت نتیجه‌های سرویس‌های ایرانی است.
-    چون بعضی سرویس‌ها جستجوی خود را با JavaScript
-    اجرا می‌کنند، به جای جعل نتیجه، لینک جستجوی
-    رسمی همان سرویس را برمی‌گردانیم.
+    هر نتیجه یک سرویس رسمی است که کاربر می‌تواند
+    عنوان موردنظر را در آن جستجو کند.
     """
 
     query = (query or "").strip()
@@ -216,32 +151,30 @@ async def search_movies(
 
         results.append({
             "id": provider["id"],
-            "title": provider["name"],
-            "name": provider["name"],
+
+            # عنوان واقعی جستجو
+            "title": query,
+            "name": query,
             "original_title": query,
 
-            # برای سازگاری با bot.py
-            "_media_type": "movie",
+            "_media_type": "provider",
 
             "provider_id": provider["id"],
             "provider_name": provider["name"],
             "provider_url": provider["url"],
+            "provider_home": provider["home_url"],
 
             "release_date": "",
             "vote_average": None,
 
             "overview": (
-                f"برای «{query}» "
-                f"در {provider['name']} جستجو کن."
+                f"جستجوی «{query}» "
+                f"در {provider['name']}"
             ),
         })
 
     return results[:limit]
 
-
-# ============================================================
-# PROVIDERS
-# ============================================================
 
 async def get_watch_providers(
     tmdb_id: int,
@@ -249,39 +182,23 @@ async def get_watch_providers(
     region: Optional[str] = None,
 ):
     """
-    سازگاری با bot.py قدیمی.
-
-    TMDb استفاده نمی‌شود.
-
-    چون این تابع شناسه TMDb دریافت می‌کند، نمی‌تواند
-    عنوان واقعی را از TMDb بگیرد. بنابراین bot.py جدید
-    باید از provider نتایج جستجو استفاده کند.
+    این تابع برای سازگاری با bot.py قدیمی نگه داشته شده.
     """
 
-    return None
+    return []
 
-
-# ============================================================
-# PROVIDER SEARCH FOR SELECTED RESULT
-# ============================================================
 
 async def get_provider_results(
     query: str,
 ):
-    """
-    جستجوی مستقیم یک عنوان در تمام سرویس‌های تعریف‌شده.
-    """
-
     return await search_iranian_sources(
         query
     )
 
 
-# ============================================================
-# DISPLAY
-# ============================================================
-
-def _badges(item: dict) -> str:
+def _badges(
+    item: dict,
+) -> str:
 
     badges = []
 
@@ -299,8 +216,8 @@ def _badges(item: dict) -> str:
 
     if not badges:
         return (
-            "ℹ️ وضعیت دوبله، زیرنویس و هزینه "
-            "در صفحه رسمی سرویس بررسی شود"
+            "ℹ️ وضعیت محتوا در صفحه رسمی سرویس "
+            "بررسی شود."
         )
 
     return " • ".join(badges)
@@ -312,7 +229,7 @@ def providers_text(
 
     if not providers:
         return (
-            "😕 <b>منبع قانونی پیدا نشد.</b>"
+            "😕 <b>سرویسی پیدا نشد.</b>"
         )
 
     lines = [
@@ -341,10 +258,6 @@ def providers_text(
 
     return "\n".join(lines)
 
-
-# ============================================================
-# MOVIE TEXT
-# ============================================================
 
 def movie_text(
     movie: dict,
@@ -389,10 +302,6 @@ def movie_text(
         f"📝 {overview}"
     )
 
-
-# ============================================================
-# EXPORT
-# ============================================================
 
 __all__ = [
     "search_iranian_sources",
