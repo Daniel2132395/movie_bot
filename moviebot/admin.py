@@ -164,4 +164,363 @@ def admin_management_kb():
 
 def back_admin_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="
+        [InlineKeyboardButton(text="🔙 بازگشت به پنل", callback_data="admin:home")]
+    ])
+
+
+# ============================================================
+# ADMIN STATE
+# ============================================================
+
+class AdminState(StatesGroup):
+    waiting_add_id = State()
+    waiting_remove_id = State()
+
+
+# ============================================================
+# /admin
+# ============================================================
+
+@admin_router.message(Command("admin"))
+async def admin_command(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+
+    if not is_admin(user_id):
+        await message.answer("⛔ شما اجازه دسترسی به پنل مدیریت را ندارید.")
+        return
+
+    await state.clear()
+    await message.answer(
+        "🎬 <b>MovieBot Admin Panel</b>\n\nخوش آمدید مدیر عزیز 👑\n\nیکی از گزینه‌های زیر را انتخاب کنید:",
+        reply_markup=admin_main_kb(),
+    )
+
+
+# ============================================================
+# HOME
+# ============================================================
+
+@admin_router.callback_query(F.data == "admin:home")
+async def admin_home(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ دسترسی ندارید.", show_alert=True)
+        return
+    await state.clear()
+    await call.message.edit_text(
+        "🎬 <b>MovieBot Admin Panel</b>\n\nمدیریت حرفه‌ای ربات:",
+        reply_markup=admin_main_kb(),
+    )
+    await call.answer()
+
+
+# ============================================================
+# STATS
+# ============================================================
+
+@admin_router.callback_query(F.data == "admin:stats")
+async def admin_stats(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ دسترسی ندارید.", show_alert=True)
+        return
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute("SELECT COUNT(*) AS c FROM users")
+    total_users = cur.fetchone()["c"]
+
+    cur.execute("SELECT COUNT(*) AS c FROM searches")
+    total_searches = cur.fetchone()["c"]
+
+    cur.execute("SELECT COUNT(*) AS c FROM usage")
+    total_usage = cur.fetchone()["c"]
+
+    cur.execute("SELECT COUNT(*) AS c FROM admins")
+    total_admins = cur.fetchone()["c"]
+
+    start = utc_day_start()
+    cur.execute("SELECT COUNT(*) AS c FROM users WHERE created_at >= ?", (start,))
+    new_today = cur.fetchone()["c"]
+
+    cur.execute("SELECT COUNT(*) AS c FROM users WHERE last_seen >= ?", (start,))
+    active_today = cur.fetchone()["c"]
+
+    conn.close()
+
+    text = (f"📊 <b>آمار کلی MovieBot</b>\n\n"
+            f"👥 کل کاربران: <b>{total_users:,}</b>\n"
+            f"🆕 کاربران جدید امروز: <b>{new_today:,}</b>\n"
+            f"🟢 کاربران فعال امروز: <b>{active_today:,}</b>\n\n"
+            f"🔎 کل جستجوها: <b>{total_searches:,}</b>\n"
+            f"⚡ کل استفاده‌ها: <b>{total_usage:,}</b>\n\n"
+            f"👑 تعداد ادمین‌ها: <b>{total_admins:,}</b>")
+
+    await call.message.edit_text(text, reply_markup=back_admin_kb())
+    await call.answer()
+
+
+# ============================================================
+# TIME STATS
+# ============================================================
+
+@admin_router.callback_query(F.data == "admin:time_stats")
+async def admin_time_stats(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ دسترسی ندارید.", show_alert=True)
+        return
+
+    conn = get_db()
+    cur = conn.cursor()
+    now_dt = datetime.now(timezone.utc)
+
+    today = now_dt.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    week = (now_dt - timedelta(days=7)).isoformat()
+    month = (now_dt - timedelta(days=30)).isoformat()
+
+    cur.execute("SELECT COUNT(*) FROM users WHERE created_at >= ?", (today,))
+    users_today = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM users WHERE created_at >= ?", (week,))
+    users_week = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM users WHERE created_at >= ?", (month,))
+    users_month = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM searches WHERE created_at >= ?", (today,))
+    searches_today = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM searches WHERE created_at >= ?", (week,))
+    searches_week = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM searches WHERE created_at >= ?", (month,))
+    searches_month = cur.fetchone()[0]
+
+    conn.close()
+
+    text = (f"📈 <b>آمار زمانی MovieBot</b>\n\n"
+            f"📅 <b>امروز</b>\n👥 کاربران جدید: {users_today:,}\n🔎 جستجوها: {searches_today:,}\n\n"
+            f"📆 <b>۷ روز اخیر</b>\n👥 کاربران جدید: {users_week:,}\n🔎 جستجوها: {searches_week:,}\n\n"
+            f"🗓 <b>۳۰ روز اخیر</b>\n👥 کاربران جدید: {users_month:,}\n🔎 جستجوها: {searches_month:,}")
+
+    await call.message.edit_text(text, reply_markup=back_admin_kb())
+    await call.answer()
+
+
+# ============================================================
+# USERS LIST
+# ============================================================
+
+@admin_router.callback_query(F.data == "admin:users")
+async def admin_users(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ دسترسی ندارید.", show_alert=True)
+        return
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT user_id, username, first_name, last_seen
+        FROM users ORDER BY last_seen DESC LIMIT 15
+    """)
+    rows = cur.fetchall()
+    conn.close()
+
+    if not rows:
+        text = "👥 هنوز کاربری ثبت نشده است."
+    else:
+        lines = ["👥 <b>آخرین کاربران MovieBot</b>\n"]
+        for i, row in enumerate(rows, 1):
+            username = f"@{row['username']}" if row["username"] else "بدون username"
+            first_name = row["first_name"] or "بدون نام"
+            lines.append(f"{i}. {first_name}\n   🆔 {row['user_id']}\n   👤 {username}\n")
+        text = "\n".join(lines)
+
+    await call.message.edit_text(text[:4090], reply_markup=back_admin_kb())
+    await call.answer()
+
+
+# ============================================================
+# ADMIN MANAGEMENT
+# ============================================================
+
+@admin_router.callback_query(F.data == "admin:admins")
+async def admin_management(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ دسترسی ندارید.", show_alert=True)
+        return
+    await call.message.edit_text(
+        "👑 <b>مدیریت ادمین‌ها</b>\n\nاز گزینه‌های زیر استفاده کنید:",
+        reply_markup=admin_management_kb(),
+    )
+    await call.answer()
+
+
+@admin_router.callback_query(F.data == "admin:list")
+async def admin_list(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ دسترسی ندارید.", show_alert=True)
+        return
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT user_id, added_by, created_at FROM admins ORDER BY created_at ASC")
+    rows = cur.fetchall()
+    conn.close()
+
+    lines = ["👑 <b>لیست مدیران MovieBot</b>\n"]
+    for i, row in enumerate(rows, 1):
+        role = "👑 Owner" if row["user_id"] == OWNER_ID else "🛡 Admin"
+        lines.append(f"{i}. {role}\n🆔 <code>{row['user_id']}</code>\n")
+
+    await call.message.edit_text("\n".join(lines), reply_markup=back_admin_kb())
+    await call.answer()
+
+
+# ============================================================
+# ADD ADMIN
+# ============================================================
+
+@admin_router.callback_query(F.data == "admin:add")
+async def admin_add_start(call: CallbackQuery, state: FSMContext):
+    if not is_owner(call.from_user.id):
+        await call.answer("⛔ فقط Owner می‌تواند ادمین اضافه کند.", show_alert=True)
+        return
+
+    await state.set_state(AdminState.waiting_add_id)
+    await call.message.edit_text(
+        "➕ <b>افزودن ادمین</b>\n\nTelegram ID شخص را ارسال کن.\n\nمثال:\n<code>123456789</code>\n\nبرای لغو /cancel را بفرست.",
+    )
+    await call.answer()
+
+
+@admin_router.message(AdminState.waiting_add_id)
+async def admin_add_finish(message: Message, state: FSMContext):
+    if not is_owner(message.from_user.id):
+        await state.clear()
+        return
+
+    raw = message.text.strip()
+    if not raw.isdigit():
+        await message.answer("❌ Telegram ID باید فقط شامل عدد باشد.\n\nمثال:\n<code>123456789</code>")
+        return
+
+    new_admin_id = int(raw)
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT user_id FROM admins WHERE user_id = ?", (new_admin_id,))
+    if cur.fetchone():
+        conn.close()
+        await state.clear()
+        await message.answer("⚠️ این شخص از قبل ادمین است.", reply_markup=admin_main_kb())
+        return
+
+    cur.execute("INSERT INTO admins (user_id, added_by, created_at) VALUES (?, ?, ?)",
+                (new_admin_id, message.from_user.id, now()))
+    conn.commit()
+    conn.close()
+
+    await state.clear()
+    await message.answer(
+        f"✅ <b>ادمین با موفقیت اضافه شد.</b>\n\n🆔 ID: <code>{new_admin_id}</code>\n\nاکنون این شخص می‌تواند با دستور /admin وارد پنل شود.",
+        reply_markup=admin_main_kb()
+    )
+
+
+# ============================================================
+# REMOVE ADMIN
+# ============================================================
+
+@admin_router.callback_query(F.data == "admin:remove")
+async def admin_remove_start(call: CallbackQuery, state: FSMContext):
+    if not is_owner(call.from_user.id):
+        await call.answer("⛔ فقط Owner می‌تواند ادمین حذف کند.", show_alert=True)
+        return
+
+    await state.set_state(AdminState.waiting_remove_id)
+    await call.message.edit_text(
+        "🗑 <b>حذف ادمین</b>\n\nTelegram ID ادمینی که می‌خواهی حذف شود را بفرست.\n\n⚠️ Owner قابل حذف نیست."
+    )
+    await call.answer()
+
+
+@admin_router.message(AdminState.waiting_remove_id)
+async def admin_remove_finish(message: Message, state: FSMContext):
+    if not is_owner(message.from_user.id):
+        await state.clear()
+        return
+
+    raw = message.text.strip()
+    if not raw.isdigit():
+        await message.answer("❌ ID نامعتبر است.")
+        return
+
+    remove_id = int(raw)
+    if remove_id == OWNER_ID:
+        await state.clear()
+        await message.answer("⛔ Owner اصلی قابل حذف نیست.", reply_markup=admin_main_kb())
+        return
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM admins WHERE user_id = ?", (remove_id,))
+    deleted = cur.rowcount
+    conn.commit()
+    conn.close()
+
+    await state.clear()
+    if deleted:
+        text = f"✅ <b>ادمین حذف شد.</b>\n\n🆔 ID: <code>{remove_id}</code>"
+    else:
+        text = "⚠️ این ID در لیست ادمین‌ها وجود نداشت."
+
+    await message.answer(text, reply_markup=admin_main_kb())
+
+
+# ============================================================
+# REFRESH & CLOSE
+# ============================================================
+
+@admin_router.callback_query(F.data == "admin:refresh")
+async def admin_refresh(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ دسترسی ندارید.", show_alert=True)
+        return
+    await call.answer("✅ آمار بروزرسانی شد.")
+    await call.message.edit_text(
+        "🎬 <b>MovieBot Admin Panel</b>\n\n📊 اطلاعات آماده است.",
+        reply_markup=admin_main_kb(),
+    )
+
+
+@admin_router.callback_query(F.data == "admin:close")
+async def admin_close(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ دسترسی ندارید.", show_alert=True)
+        return
+    await state.clear()
+    await call.message.delete()
+    await call.answer("پنل بسته شد.")
+
+
+# ============================================================
+# CANCEL
+# ============================================================
+
+@admin_router.message(Command("cancel"), AdminState.waiting_add_id)
+async def cancel_add(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("❌ عملیات لغو شد.", reply_markup=admin_main_kb())
+
+
+@admin_router.message(Command("cancel"), AdminState.waiting_remove_id)
+async def cancel_remove(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("❌ عملیات لغو شد.", reply_markup=admin_main_kb())
+
+
+# ============================================================
+# INIT ON IMPORT
+# ============================================================
+
+init_admin_db()
