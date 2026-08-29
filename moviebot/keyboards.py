@@ -4,6 +4,24 @@ from locales import t
 
 
 # ============================================================
+# HELPERS
+# ============================================================
+
+def _home_button(b, lang: str = "fa"):
+    b.button(
+        text="🏠 منوی اصلی",
+        callback_data="menu:home",
+    )
+
+
+def _back_button(b, lang: str = "fa"):
+    b.button(
+        text="⬅️ بازگشت",
+        callback_data="menu:home",
+    )
+
+
+# ============================================================
 # LANGUAGE
 # ============================================================
 
@@ -29,12 +47,12 @@ def lang_kb() -> InlineKeyboardMarkup:
 # MAIN MENU
 # ============================================================
 
-def main_menu_kb(lang: str) -> InlineKeyboardMarkup:
+def main_menu_kb(lang: str = "fa") -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
 
-    # ⭐ بخش اصلی جستجو و تماشا
+    # جستجو - مهم‌ترین گزینه
     b.button(
-        text="🎬 جستجو و تماشای فیلم",
+        text="🎬 🔎 جستجو و تماشا",
         callback_data="menu:search_watch",
     )
 
@@ -74,32 +92,31 @@ def main_menu_kb(lang: str) -> InlineKeyboardMarkup:
     )
 
     b.button(
-        text=t("menu_lang", lang),
+        text="🌐 زبان",
         callback_data="menu:lang",
     )
 
-    # چیدمان منوی اصلی
     b.adjust(
-        1,      # جستجو و تماشا
-        2,      # برترین‌ها + ژانر
-        2,      # پیشنهاد + مقایسه
-        2,      # بازیگر + کارگردان
-        1,      # اکران
-        1,      # زبان
+        1,
+        2,
+        2,
+        2,
+        1,
+        1,
     )
 
     return b.as_markup()
 
 
 # ============================================================
-# SEARCH & WATCH MENU
+# SEARCH & WATCH
 # ============================================================
 
 def search_watch_kb(lang: str = "fa") -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
 
     b.button(
-        text="🔎 جستجوی فیلم یا سریال",
+        text="🔎 جستجوی فیلم / سریال",
         callback_data="search:start",
     )
 
@@ -113,37 +130,6 @@ def search_watch_kb(lang: str = "fa") -> InlineKeyboardMarkup:
         callback_data="menu:home",
     )
 
-    b.adjust(1)
-
-    return b.as_markup()
-
-
-# ============================================================
-# SEARCH RESULT MENU
-# ============================================================
-
-def movie_result_kb(
-    tmdb_id: int,
-    media_type: str,
-) -> InlineKeyboardMarkup:
-
-    b = InlineKeyboardBuilder()
-
-    b.button(
-        text="📺 گزینه‌های قانونی تماشا",
-        callback_data=f"watch:{media_type}:{tmdb_id}",
-    )
-
-    b.button(
-        text="🔎 جستجوی دوباره",
-        callback_data="search:start",
-    )
-
-    b.button(
-        text="🏠 خانه",
-        callback_data="menu:home",
-    )
-
     b.adjust(
         1,
         2,
@@ -153,7 +139,7 @@ def movie_result_kb(
 
 
 # ============================================================
-# SEARCH RESULT LIST
+# SEARCH RESULT
 # ============================================================
 
 def search_results_kb(
@@ -170,6 +156,8 @@ def search_results_kb(
             or movie.get("original_title")
             or "بدون نام"
         )
+
+        title = str(title).strip()
 
         media_type = movie.get(
             "_media_type",
@@ -188,11 +176,16 @@ def search_results_kb(
         )
 
         b.button(
-            text=f"{icon} {title[:45]}",
+            text=f"{icon} {title[:40]}",
             callback_data=(
                 f"result:{media_type}:{tmdb_id}"
             ),
         )
+
+    b.button(
+        text="🔎 جستجوی دوباره",
+        callback_data="search:start",
+    )
 
     b.button(
         text="🏠 منوی اصلی",
@@ -205,23 +198,87 @@ def search_results_kb(
 
 
 # ============================================================
-# WATCH PROVIDERS
+# MOVIE RESULT
+# ============================================================
+
+def movie_result_kb(
+    tmdb_id: int,
+    media_type: str,
+    has_direct_video: bool = False,
+) -> InlineKeyboardMarkup:
+
+    b = InlineKeyboardBuilder()
+
+    # گزینه‌های قانونی تماشا
+    b.button(
+        text="📺 سرویس‌های قانونی",
+        callback_data=(
+            f"watch:{media_type}:{tmdb_id}"
+        ),
+    )
+
+    # فقط برای ویدئوی مجاز خود سیستم
+    if has_direct_video:
+
+        b.button(
+            text="▶️ پخش مستقیم",
+            callback_data=(
+                f"direct:{media_type}:{tmdb_id}"
+            ),
+        )
+
+    b.button(
+        text="🔎 جستجوی دوباره",
+        callback_data="search:start",
+    )
+
+    b.button(
+        text="🏠 خانه",
+        callback_data="menu:home",
+    )
+
+    if has_direct_video:
+        b.adjust(
+            1,
+            1,
+            2,
+        )
+    else:
+        b.adjust(
+            1,
+            2,
+        )
+
+    return b.as_markup()
+
+
+# ============================================================
+# WATCH
 # ============================================================
 
 def watch_kb(
     media_type: str,
     tmdb_id: int,
     provider_link: str | None = None,
+    direct_video_url: str | None = None,
 ) -> InlineKeyboardMarkup:
 
     b = InlineKeyboardBuilder()
 
-    # فقط اگر TMDb لینک رسمی provider داشته باشد
+    # لینک رسمی سرویس
     if provider_link:
 
         b.button(
-            text="🔗 مشاهده سرویس‌های رسمی",
+            text="🔗 صفحه رسمی سرویس",
             url=provider_link,
+        )
+
+    # لینک مستقیم فقط برای محتوای مجاز
+    if direct_video_url:
+
+        b.button(
+            text="▶️ پخش مستقیم",
+            url=direct_video_url,
         )
 
     b.button(
@@ -241,17 +298,20 @@ def watch_kb(
         callback_data="menu:home",
     )
 
+    rows = []
+
     if provider_link:
-        b.adjust(
-            1,
-            2,
-            1,
-        )
-    else:
-        b.adjust(
-            2,
-            1,
-        )
+        rows.append(1)
+
+    if direct_video_url:
+        rows.append(1)
+
+    rows.extend([
+        2,
+        1,
+    ])
+
+    b.adjust(*rows)
 
     return b.as_markup()
 
@@ -284,7 +344,7 @@ def region_kb() -> InlineKeyboardMarkup:
     )
 
     b.button(
-        text="⬅️ بازگشت",
+        text="🏠 منوی اصلی",
         callback_data="menu:home",
     )
 
@@ -321,7 +381,7 @@ def genre_kb(lang: str) -> InlineKeyboardMarkup:
         )
 
     b.button(
-        text=t("back", lang),
+        text="🏠 منوی اصلی",
         callback_data="menu:home",
     )
 
@@ -357,7 +417,14 @@ def mood_kb(lang: str) -> InlineKeyboardMarkup:
             callback_data=f"mood:{code}",
         )
 
-    b.adjust(1)
+    b.button(
+        text="🏠 منوی اصلی",
+        callback_data="menu:home",
+    )
+
+    b.adjust(
+        1,
+    )
 
     return b.as_markup()
 
@@ -424,7 +491,10 @@ def mbti_kb(lang: str) -> InlineKeyboardMarkup:
         )
 
     b.button(
-        text=t("mbti_unknown", lang),
+        text=t(
+            "mbti_unknown",
+            lang,
+        ),
         callback_data="mbti:UNKNOWN",
     )
 
@@ -443,11 +513,14 @@ def mbti_kb(lang: str) -> InlineKeyboardMarkup:
 # BACK
 # ============================================================
 
-def back_kb(lang: str) -> InlineKeyboardMarkup:
+def back_kb(
+    lang: str = "fa",
+) -> InlineKeyboardMarkup:
+
     b = InlineKeyboardBuilder()
 
     b.button(
-        text=t("back", lang),
+        text="🏠 منوی اصلی",
         callback_data="menu:home",
     )
 
