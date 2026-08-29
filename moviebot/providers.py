@@ -6,7 +6,7 @@
 import logging
 import os
 from typing import Optional
-
+import asyncio
 import aiohttp
 from dotenv import load_dotenv
 
