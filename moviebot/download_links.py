@@ -7,51 +7,83 @@ from urllib.parse import quote_plus
 logger = logging.getLogger("MovieBot.download")
 
 # ============================================================
-# سرویس‌های دانلود و تماشای آنلاین
+# سرویس‌های دانلود
 # ============================================================
 
 DOWNLOAD_SERVICES = {
     "film2movie": {
-        "name": "فیلم تو مووی",
+        "name": "🎬 فیلم تو مووی",
         "domain": "film2movie.ir",
         "search_url": "https://www.film2movie.ir/search/{query}",
         "type": "دانلود",
     },
     "nimafilm": {
-        "name": "نیما فیلم",
+        "name": "🎬 نیما فیلم",
         "domain": "nimafilm.ir",
         "search_url": "https://www.nimafilm.ir/search/{query}",
         "type": "دانلود",
     },
     "filmgram": {
-        "name": "فیلم گرام",
+        "name": "🎬 فیلم گرام",
         "domain": "filmgram.com",
         "search_url": "https://www.filmgram.com/search/{query}",
         "type": "دانلود",
     },
     "moviebox": {
-        "name": "مووی باکس",
+        "name": "🎬 مووی باکس",
         "domain": "moviebox.ir",
         "search_url": "https://moviebox.ir/search/{query}",
         "type": "دانلود",
     },
     "720p": {
-        "name": "۷۲۰پی",
+        "name": "🎬 ۷۲۰پی",
         "domain": "720p.ir",
         "search_url": "https://720p.ir/search/{query}",
         "type": "دانلود",
     },
     "hdvideo": {
-        "name": "اچ‌دی ویدیو",
+        "name": "🎬 اچ‌دی ویدیو",
         "domain": "hdvideo.ir",
         "search_url": "https://hdvideo.ir/search/{query}",
         "type": "دانلود",
     },
-    "nobitex": {
-        "name": "نوبیتکس",
-        "domain": "nobitex.ir",
-        "search_url": "https://nobitex.ir/search/{query}",
-        "type": "دانلود",
+}
+
+
+# ============================================================
+# سرویس‌های تماشا آنلاین
+# ============================================================
+
+WATCH_SERVICES = {
+    "telewebion": {
+        "name": "▶️ تلوبیون",
+        "domain": "telewebion.com",
+        "search_url": "https://www.telewebion.com/search?q={query}",
+        "type": "تماشا آنلاین",
+    },
+    "aparat": {
+        "name": "▶️ آپارات",
+        "domain": "aparat.com",
+        "search_url": "https://www.aparat.com/search/{query}",
+        "type": "تماشا آنلاین",
+    },
+    "tamasha": {
+        "name": "▶️ تماشا",
+        "domain": "tamasha.com",
+        "search_url": "https://www.tamasha.com/search?q={query}",
+        "type": "تماشا آنلاین",
+    },
+    "namava": {
+        "name": "▶️ نماوا",
+        "domain": "namava.ir",
+        "search_url": "https://www.namava.ir/search?q={query}",
+        "type": "تماشا آنلاین",
+    },
+    "filimo": {
+        "name": "▶️ فیلیمو",
+        "domain": "filimo.com",
+        "search_url": "https://www.filimo.com/search?q={query}",
+        "type": "تماشا آنلاین",
     },
 }
 
@@ -61,7 +93,7 @@ DOWNLOAD_SERVICES = {
 # ============================================================
 
 async def search_download_links(query: str):
-    """جستجوی لینک دانلود و تماشا"""
+    """جستجوی لینک دانلود از سایت‌های معتبر"""
     query = query.strip()
     if not query:
         return []
@@ -71,17 +103,16 @@ async def search_download_links(query: str):
     async with aiohttp.ClientSession() as session:
         for key, service in DOWNLOAD_SERVICES.items():
             try:
-                # ساخت URL جستجو
                 search_url = service["search_url"].format(query=quote_plus(query))
                 
-                # دریافت صفحه
                 async with session.get(
                     search_url,
                     headers={
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                        "Accept-Language": "fa-IR,fa;q=0.9",
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Accept-Language": "fa-IR,fa;q=0.9,en;q=0.8",
                     },
                     timeout=10,
+                    allow_redirects=True,
                 ) as response:
                     if response.status != 200:
                         continue
@@ -96,11 +127,7 @@ async def search_download_links(query: str):
                         href = link.get("href", "")
                         text = link.get_text(strip=True)
                         
-                        # بررسی اینکه لینک مربوط به فیلم هست
-                        if not href or not text:
-                            continue
-                        
-                        if len(text) < 3:
+                        if not href or not text or len(text) < 3:
                             continue
                         
                         # ساخت URL کامل
@@ -109,13 +136,15 @@ async def search_download_links(query: str):
                         elif not href.startswith("http"):
                             href = f"https://{service['domain']}/{href}"
                         
-                        results.append({
-                            "title": text[:50],
-                            "url": href,
-                            "service": service["name"],
-                            "type": service["type"],
-                            "domain": service["domain"],
-                        })
+                        # بررسی اینکه لینک به صفحه فیلم اشاره دارد
+                        if any(x in href.lower() for x in ["/movie/", "/film/", "/video/", "/watch/", "/download/"]):
+                            results.append({
+                                "title": text[:50],
+                                "url": href,
+                                "service": service["name"],
+                                "type": service["type"],
+                                "domain": service["domain"],
+                            })
                         
                         if len(results) >= 20:
                             break
@@ -131,42 +160,8 @@ async def search_download_links(query: str):
 # جستجوی لینک تماشا آنلاین
 # ============================================================
 
-WATCH_SERVICES = {
-    "telewebion": {
-        "name": "تلوبیون",
-        "domain": "telewebion.com",
-        "search_url": "https://www.telewebion.com/search?q={query}",
-        "type": "تماشا آنلاین",
-    },
-    "aparat": {
-        "name": "آپارات",
-        "domain": "aparat.com",
-        "search_url": "https://www.aparat.com/search/{query}",
-        "type": "تماشا آنلاین",
-    },
-    "tamasha": {
-        "name": "تماشا",
-        "domain": "tamasha.com",
-        "search_url": "https://www.tamasha.com/search?q={query}",
-        "type": "تماشا آنلاین",
-    },
-    "namava": {
-        "name": "نماوا",
-        "domain": "namava.ir",
-        "search_url": "https://www.namava.ir/search?q={query}",
-        "type": "تماشا آنلاین",
-    },
-    "filimo": {
-        "name": "فیلیمو",
-        "domain": "filimo.com",
-        "search_url": "https://www.filimo.com/search?q={query}",
-        "type": "تماشا آنلاین",
-    },
-}
-
-
 async def search_watch_links(query: str):
-    """جستجوی لینک تماشا آنلاین"""
+    """جستجوی لینک تماشا آنلاین از سرویس‌های مختلف"""
     query = query.strip()
     if not query:
         return []
@@ -181,10 +176,11 @@ async def search_watch_links(query: str):
                 async with session.get(
                     search_url,
                     headers={
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                        "Accept-Language": "fa-IR,fa;q=0.9",
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Accept-Language": "fa-IR,fa;q=0.9,en;q=0.8",
                     },
                     timeout=10,
+                    allow_redirects=True,
                 ) as response:
                     if response.status != 200:
                         continue
