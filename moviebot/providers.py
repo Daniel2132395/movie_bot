@@ -1,59 +1,36 @@
 # providers.py
 # ============================================================
-# MovieBot - Legal Watch Providers
-# aiogram 3.x + TMDb
+# MovieBot — Legal Iran Watch Providers
+# فقط منابعی که امکان دسترسی قانونی دارند
 # ============================================================
 
 import asyncio
 import logging
 import os
-from html import escape
 from typing import Optional
+from urllib.parse import quote_plus
 
 import aiohttp
 from dotenv import load_dotenv
-
-
-# ============================================================
-# CONFIG
-# ============================================================
 
 load_dotenv()
 
 logger = logging.getLogger("MovieBot.providers")
 
-TMDB_API_KEY = os.getenv(
-    "TMDB_API_KEY",
-    "",
-).strip()
-
+TMDB_API_KEY = os.getenv("TMDB_API_KEY", "").strip()
 TMDB_BASE_URL = "https://api.themoviedb.org/3"
-
-DEFAULT_REGION = os.getenv(
-    "WATCH_REGION",
-    "IR",
-).strip().upper()
+DEFAULT_REGION = "IR"
 
 
 # ============================================================
-# HTTP
+# TMDb
 # ============================================================
 
 async def _tmdb_get(
     endpoint: str,
     params: Optional[dict] = None,
 ):
-    """
-    درخواست GET به TMDb.
-
-    خروجی:
-        dict | None
-    """
-
     if not TMDB_API_KEY:
-        logger.warning(
-            "TMDB_API_KEY is not configured."
-        )
         return None
 
     request_params = {
@@ -63,60 +40,31 @@ async def _tmdb_get(
     if params:
         request_params.update(params)
 
-    url = TMDB_BASE_URL + endpoint
-
-    timeout = aiohttp.ClientTimeout(
-        total=12
-    )
-
     try:
+        timeout = aiohttp.ClientTimeout(total=12)
 
-        async with aiohttp.ClientSession(
-            timeout=timeout
-        ) as session:
-
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(
-                url,
+                TMDB_BASE_URL + endpoint,
                 params=request_params,
             ) as response:
 
                 if response.status != 200:
-
                     logger.warning(
-                        "TMDb HTTP %s for %s",
+                        "TMDb HTTP %s: %s",
                         response.status,
                         endpoint,
                     )
-
                     return None
 
                 return await response.json()
 
     except asyncio.TimeoutError:
-
-        logger.warning(
-            "TMDb request timed out: %s",
-            endpoint,
-        )
-
-        return None
-
-    except aiohttp.ClientError:
-
-        logger.exception(
-            "TMDb network error: %s",
-            endpoint,
-        )
-
+        logger.warning("TMDb timeout")
         return None
 
     except Exception:
-
-        logger.exception(
-            "Unexpected TMDb error: %s",
-            endpoint,
-        )
-
+        logger.exception("TMDb request failed")
         return None
 
 
@@ -129,155 +77,53 @@ async def search_movies(
     language: str = "fa-IR",
     limit: int = 10,
 ):
-    """
-    جستجوی خودکار فیلم و سریال.
-
-    ابتدا فیلم‌ها و سپس سریال‌ها از TMDb گرفته می‌شوند.
-    """
-
     query = (query or "").strip()
 
     if not query:
         return []
-
-    limit = max(
-        1,
-        min(int(limit), 20),
-    )
-
-    # --------------------------------------------------------
-    # Movie
-    # --------------------------------------------------------
 
     movie_data = await _tmdb_get(
         "/search/movie",
         {
             "query": query,
             "language": language,
+            "region": DEFAULT_REGION,
             "include_adult": "false",
-            "page": 1,
         },
     )
-
-    movie_results = (
-        movie_data.get("results", [])
-        if movie_data
-        else []
-    )
-
-    # --------------------------------------------------------
-    # TV
-    # --------------------------------------------------------
 
     tv_data = await _tmdb_get(
         "/search/tv",
         {
             "query": query,
             "language": language,
-            "page": 1,
+            "include_adult": "false",
         },
-    )
-
-    tv_results = (
-        tv_data.get("results", [])
-        if tv_data
-        else []
     )
 
     results = []
 
-    # --------------------------------------------------------
-    # Normalize movies
-    # --------------------------------------------------------
-
-    for item in movie_results:
-
+    for item in (movie_data or {}).get("results", []):
         item = dict(item)
-
         item["_media_type"] = "movie"
-
-        item["title"] = (
-            item.get("title")
-            or item.get("original_title")
-            or "بدون نام"
-        )
-
-        item["original_title"] = (
-            item.get("original_title")
-            or item.get("title")
-        )
-
         results.append(item)
 
-    # --------------------------------------------------------
-    # Normalize TV
-    # --------------------------------------------------------
-
-    for item in tv_results:
-
+    for item in (tv_data or {}).get("results", []):
         item = dict(item)
-
         item["_media_type"] = "tv"
-
         item["title"] = (
             item.get("name")
             or item.get("original_name")
-            or "بدون نام"
         )
-
-        item["original_title"] = (
-            item.get("original_name")
-            or item.get("name")
-        )
-
-        item["release_date"] = (
-            item.get("first_air_date")
-            or ""
-        )
-
+        item["original_title"] = item.get("original_name")
+        item["release_date"] = item.get("first_air_date")
         results.append(item)
 
-    # --------------------------------------------------------
-    # Sort
-    # --------------------------------------------------------
-
-    def sort_key(item):
-
-        try:
-            popularity = float(
-                item.get(
-                    "popularity",
-                    0,
-                )
-                or 0
-            )
-        except (
-            ValueError,
-            TypeError,
-        ):
-            popularity = 0
-
-        try:
-            rating = float(
-                item.get(
-                    "vote_average",
-                    0,
-                )
-                or 0
-            )
-        except (
-            ValueError,
-            TypeError,
-        ):
-            rating = 0
-
-        return (
-            popularity,
-            rating,
-        )
-
     results.sort(
-        key=sort_key,
+        key=lambda x: (
+            float(x.get("popularity") or 0),
+            float(x.get("vote_average") or 0),
+        ),
         reverse=True,
     )
 
@@ -285,107 +131,25 @@ async def search_movies(
 
 
 # ============================================================
-# MOVIE / TV DETAILS
-# ============================================================
-
-async def get_movie_details(
-    tmdb_id: int,
-    media_type: str = "movie",
-    language: str = "fa-IR",
-):
-    """
-    دریافت جزئیات یک فیلم یا سریال.
-    """
-
-    if not tmdb_id:
-        return None
-
-    if media_type not in (
-        "movie",
-        "tv",
-    ):
-        media_type = "movie"
-
-    data = await _tmdb_get(
-        f"/{media_type}/{tmdb_id}",
-        {
-            "language": language,
-        },
-    )
-
-    if not data:
-        return None
-
-    data["_media_type"] = media_type
-
-    if media_type == "tv":
-
-        data["title"] = (
-            data.get("name")
-            or data.get("original_name")
-            or "بدون نام"
-        )
-
-        data["original_title"] = (
-            data.get("original_name")
-            or data.get("name")
-        )
-
-        data["release_date"] = (
-            data.get("first_air_date")
-            or ""
-        )
-
-    else:
-
-        data["title"] = (
-            data.get("title")
-            or data.get("original_title")
-            or "بدون نام"
-        )
-
-    return data
-
-
-# ============================================================
-# WATCH PROVIDERS
+# WATCH PROVIDERS — IR
 # ============================================================
 
 async def get_watch_providers(
     tmdb_id: int,
     media_type: str = "movie",
-    region: Optional[str] = None,
+    region: str = "IR",
 ):
-    """
-    دریافت سرویس‌های قانونی تماشا از TMDb.
-
-    دسته‌ها:
-
-        free
-        ads
-        flatrate
-        rent
-        buy
-
-    هیچ URL ساختگی ایجاد نمی‌شود.
-    """
-
     if not tmdb_id:
         return None
 
-    if media_type not in (
-        "movie",
-        "tv",
-    ):
-        media_type = "movie"
+    media_type = (
+        "tv"
+        if media_type == "tv"
+        else "movie"
+    )
 
-    region = (
-        region
-        or DEFAULT_REGION
-    ).strip().upper()
-
-    if len(region) != 2:
-        region = DEFAULT_REGION
+    # این بخش عمداً فقط IR را بررسی می‌کند.
+    region = "IR"
 
     data = await _tmdb_get(
         f"/{media_type}/{tmdb_id}/watch/providers"
@@ -394,90 +158,30 @@ async def get_watch_providers(
     if not data:
         return None
 
-    countries = data.get(
-        "results",
-        {},
+    country = (
+        data.get("results", {})
+        .get(region)
     )
-
-    country = countries.get(
-        region
-    )
-
-    # --------------------------------------------------------
-    # No legal provider in requested region
-    # --------------------------------------------------------
 
     if not country:
-
         return {
             "region": region,
             "link": None,
+            "flatrate": [],
             "free": [],
             "ads": [],
-            "flatrate": [],
             "rent": [],
             "buy": [],
-            "has_free": False,
-            "has_paid": False,
-            "has_any": False,
         }
-
-    free = country.get(
-        "free",
-        []
-    ) or []
-
-    ads = country.get(
-        "ads",
-        []
-    ) or []
-
-    flatrate = country.get(
-        "flatrate",
-        []
-    ) or []
-
-    rent = country.get(
-        "rent",
-        []
-    ) or []
-
-    buy = country.get(
-        "buy",
-        []
-    ) or []
 
     return {
         "region": region,
-
-        # فقط لینک رسمی‌ای که TMDb ارائه می‌کند
-        "link": country.get(
-            "link"
-        ),
-
-        "free": free,
-        "ads": ads,
-        "flatrate": flatrate,
-        "rent": rent,
-        "buy": buy,
-
-        "has_free": bool(
-            free or ads
-        ),
-
-        "has_paid": bool(
-            flatrate
-            or rent
-            or buy
-        ),
-
-        "has_any": bool(
-            free
-            or ads
-            or flatrate
-            or rent
-            or buy
-        ),
+        "link": country.get("link"),
+        "flatrate": country.get("flatrate", []),
+        "free": country.get("free", []),
+        "ads": country.get("ads", []),
+        "rent": country.get("rent", []),
+        "buy": country.get("buy", []),
     }
 
 
@@ -485,40 +189,21 @@ async def get_watch_providers(
 # PROVIDER HELPERS
 # ============================================================
 
-def provider_name(
-    provider: dict,
-) -> str:
-
+def provider_name(provider: dict) -> str:
     return (
-        provider.get(
-            "provider_name"
-        )
-        or "Unknown service"
+        provider.get("provider_name")
+        or "Unknown"
     )
 
 
-def provider_id(
-    provider: dict,
-):
-    return provider.get(
-        "provider_id"
-    )
-
-
-def provider_icon(
-    provider: dict,
-) -> str:
-
-    name = provider_name(
-        provider
-    ).lower().strip()
+def provider_icon(provider: dict) -> str:
+    name = provider_name(provider).lower()
 
     icons = {
         "netflix": "🔴",
-        "amazon prime video": "🔵",
         "prime video": "🔵",
+        "amazon prime video": "🔵",
         "apple tv": "",
-        "apple tv+": "",
         "disney plus": "🔷",
         "disney+": "🔷",
         "youtube": "▶️",
@@ -530,367 +215,179 @@ def provider_icon(
         "peacock": "🦚",
         "crunchyroll": "🟠",
         "mubi": "⚫",
-        "plex": "🟠",
-        "tubi": "📺",
-        "pluto tv": "📺",
     }
 
-    return icons.get(
-        name,
-        "📺",
-    )
+    return icons.get(name, "📺")
 
 
-def provider_button_data(
-    provider: dict,
-):
-    """
-    اطلاعات امن برای ساخت دکمه.
-
-    این تابع URL جعلی تولید نمی‌کند.
-    """
-
-    name = provider_name(
-        provider
-    )
-
-    logo_path = provider.get(
-        "logo_path"
-    )
-
-    return {
-        "name": name,
-        "icon": provider_icon(
-            provider
-        ),
-        "logo_path": logo_path,
-        "provider_id": provider_id(
-            provider
-        ),
-    }
-
-
-# ============================================================
-# DEDUPLICATION
-# ============================================================
-
-def _unique_providers(
+def _provider_list(
     providers,
+    title: str,
 ):
-    """
-    حذف سرویس‌های تکراری.
-    """
+    if not providers:
+        return ""
 
-    result = []
-
+    lines = [title]
     seen = set()
 
-    for provider in providers or []:
-
-        name = provider_name(
-            provider
-        ).strip()
-
-        key = name.lower()
-
-        if not name:
-            continue
-
-        if key in seen:
-            continue
-
-        seen.add(key)
-
-        result.append(
-            provider
-        )
-
-    return result
-
-
-# ============================================================
-# FORMAT PROVIDERS
-# ============================================================
-
-def _format_provider_list(
-    providers,
-):
-    """
-    ساخت لیست تمیز سرویس‌ها.
-    """
-
-    providers = _unique_providers(
-        providers
-    )
-
-    lines = []
-
     for provider in providers:
+        name = provider_name(provider)
 
-        data = provider_button_data(
-            provider
-        )
+        if name in seen:
+            continue
+
+        seen.add(name)
 
         lines.append(
-            f"{data['icon']} "
-            f"<b>{escape(data['name'])}</b>"
+            f"{provider_icon(provider)} {name}"
         )
 
-    return "\n".join(
-        lines
+    return "\n".join(lines)
+
+
+# ============================================================
+# APARAT — SEARCH ONLY
+# ============================================================
+
+def aparat_search_url(title: str) -> str:
+    """
+    لینک جستجوی آپارات.
+    این لینک فقط جستجو است و ربات ادعای
+    مجاز بودن تک‌تک نتایج را نمی‌کند.
+    """
+    return (
+        "https://www.aparat.com/result/"
+        + quote_plus(title)
     )
 
 
 # ============================================================
-# PROVIDERS TEXT
+# LEGAL IR SOURCES
+# ============================================================
+
+IRANIAN_LEGAL_SOURCES = [
+    {
+        "name": "آپارات",
+        "icon": "▶️",
+        "url": "https://www.aparat.com/",
+        "search": True,
+    },
+    {
+        "name": "فیلیمو",
+        "icon": "🎬",
+        "url": "https://www.filimo.com/",
+        "search": False,
+    },
+    {
+        "name": "نماوا",
+        "icon": "📺",
+        "url": "https://www.namava.ir/",
+        "search": False,
+    },
+    {
+        "name": "فیلم‌نت",
+        "icon": "🎞️",
+        "url": "https://filmnet.ir/",
+        "search": False,
+    },
+]
+
+
+def iranian_sources_text(
+    title: str,
+) -> str:
+    lines = [
+        "🇮🇷 <b>منابع ایرانی</b>",
+        "",
+        "منابع رسمی را می‌توانی برای بررسی "
+        "دسترسی قانونی این عنوان باز کنی.",
+        "",
+    ]
+
+    for source in IRANIAN_LEGAL_SOURCES:
+        lines.append(
+            f"{source['icon']} <b>{source['name']}</b>"
+        )
+
+    return "\n".join(lines)
+
+
+# ============================================================
+# CLEAN PROVIDER TEXT
 # ============================================================
 
 def providers_text(
     providers: Optional[dict],
 ):
-    """
-    خروجی تمیز و اولویت‌بندی‌شده.
-
-    ترتیب:
-
-    1. رایگان
-    2. رایگان با تبلیغ
-    3. اشتراک
-    4. اجاره
-    5. خرید
-    """
-
     if not providers:
-
         return (
-            "📺 <b>تماشای قانونی</b>\n"
+            "📺 <b>گزینه‌های تماشا</b>\n"
             "━━━━━━━━━━━━━━━━\n\n"
-            "😕 اطلاعات سرویس‌های تماشا "
-            "در دسترس نیست."
+            "😕 اطلاعات سرویس تماشا برای این عنوان "
+            "در منطقه ایران پیدا نشد."
         )
-
-    region = escape(
-        providers.get(
-            "region",
-            DEFAULT_REGION,
-        )
-    )
 
     sections = []
 
-    # --------------------------------------------------------
-    # FREE
-    # --------------------------------------------------------
-
-    free_text = _format_provider_list(
-        providers.get(
-            "free",
-            [],
-        )
+    flatrate = _provider_list(
+        providers.get("flatrate", []),
+        "📺 <b>اشتراک</b>",
     )
 
-    if free_text:
-
-        sections.append(
-            (
-                "🆓 <b>رایگان</b>\n"
-                f"{free_text}"
-            )
-        )
-
-    # --------------------------------------------------------
-    # FREE WITH ADS
-    # --------------------------------------------------------
-
-    ads_text = _format_provider_list(
-        providers.get(
-            "ads",
-            [],
-        )
+    free = _provider_list(
+        providers.get("free", []),
+        "🆓 <b>رایگان</b>",
     )
 
-    if ads_text:
-
-        sections.append(
-            (
-                "📢 <b>رایگان با تبلیغات</b>\n"
-                f"{ads_text}"
-            )
-        )
-
-    # --------------------------------------------------------
-    # SUBSCRIPTION
-    # --------------------------------------------------------
-
-    flat_text = _format_provider_list(
-        providers.get(
-            "flatrate",
-            [],
-        )
+    ads = _provider_list(
+        providers.get("ads", []),
+        "📢 <b>رایگان با تبلیغات</b>",
     )
 
-    if flat_text:
-
-        sections.append(
-            (
-                "💳 <b>اشتراکی</b>\n"
-                f"{flat_text}"
-            )
-        )
-
-    # --------------------------------------------------------
-    # RENT
-    # --------------------------------------------------------
-
-    rent_text = _format_provider_list(
-        providers.get(
-            "rent",
-            [],
-        )
+    rent = _provider_list(
+        providers.get("rent", []),
+        "💳 <b>اجاره</b>",
     )
 
-    if rent_text:
-
-        sections.append(
-            (
-                "🎟 <b>اجاره</b>\n"
-                f"{rent_text}"
-            )
-        )
-
-    # --------------------------------------------------------
-    # BUY
-    # --------------------------------------------------------
-
-    buy_text = _format_provider_list(
-        providers.get(
-            "buy",
-            [],
-        )
+    buy = _provider_list(
+        providers.get("buy", []),
+        "🛒 <b>خرید</b>",
     )
 
-    if buy_text:
-
-        sections.append(
-            (
-                "🛒 <b>خرید</b>\n"
-                f"{buy_text}"
-            )
-        )
-
-    # --------------------------------------------------------
-    # Nothing
-    # --------------------------------------------------------
+    for section in (
+        free,
+        ads,
+        flatrate,
+        rent,
+        buy,
+    ):
+        if section:
+            sections.append(section)
 
     if not sections:
-
-        return (
-            "📺 <b>تماشای قانونی</b>\n"
-            "━━━━━━━━━━━━━━━━\n\n"
-            f"🌍 منطقه: <b>{region}</b>\n\n"
-            "🆓 <b>رایگان قانونی:</b>\n"
-            "❌ در حال حاضر پیدا نشد.\n\n"
-            "ℹ️ سرویس قانونی ثبت‌شده‌ای "
-            "برای این منطقه در TMDb وجود ندارد."
+        sections.append(
+            "😕 سرویس تماشای ثبت‌شده‌ای "
+            "برای ایران پیدا نشد."
         )
 
-    # --------------------------------------------------------
-    # Header
-    # --------------------------------------------------------
-
-    result = (
-        "📺 <b>گزینه‌های تماشای قانونی</b>\n"
+    return (
+        "📺 <b>گزینه‌های تماشا</b>\n"
         "━━━━━━━━━━━━━━━━\n\n"
-        f"🌍 منطقه: <b>{region}</b>\n\n"
+        "🇮🇷 منطقه: <b>ایران</b>\n\n"
+        + "\n\n".join(sections)
     )
-
-    result += "\n\n".join(
-        sections
-    )
-
-    # --------------------------------------------------------
-    # Official destination
-    # --------------------------------------------------------
-
-    if providers.get("link"):
-
-        result += (
-            "\n\n"
-            "🔗 <b>صفحه رسمی گزینه‌های تماشا</b>"
-        )
-
-    return result
-
-
-# ============================================================
-# SIMPLE STATUS
-# ============================================================
-
-def watch_status(
-    providers: Optional[dict],
-):
-    """
-    وضعیت ساده برای استفاده در bot.py.
-
-    خروجی:
-        free
-        paid
-        free_and_paid
-        unavailable
-    """
-
-    if not providers:
-        return "unavailable"
-
-    has_free = bool(
-        providers.get("free")
-        or providers.get("ads")
-    )
-
-    has_paid = bool(
-        providers.get("flatrate")
-        or providers.get("rent")
-        or providers.get("buy")
-    )
-
-    if has_free and has_paid:
-        return "free_and_paid"
-
-    if has_free:
-        return "free"
-
-    if has_paid:
-        return "paid"
-
-    return "unavailable"
 
 
 # ============================================================
 # MOVIE TEXT
 # ============================================================
 
-def movie_text(
-    movie: dict,
-):
-    """
-    ساخت کارت تمیز فیلم / سریال.
-    """
-
+def movie_text(movie: dict):
     title = (
         movie.get("title")
         or movie.get("name")
         or movie.get("original_title")
-        or movie.get("original_name")
         or "بدون نام"
-    )
-
-    original_title = (
-        movie.get(
-            "original_title"
-        )
-        or movie.get(
-            "original_name"
-        )
     )
 
     date = (
@@ -899,147 +396,53 @@ def movie_text(
         or ""
     )
 
-    year = (
-        date[:4]
-        if date
-        else "—"
-    )
+    year = date[:4] if date else "—"
+
+    rating = movie.get("vote_average")
+
+    try:
+        rating_text = f"{float(rating):.1f}/10"
+    except (TypeError, ValueError):
+        rating_text = "—"
 
     media_type = movie.get(
         "_media_type",
         "movie",
     )
 
-    if media_type == "tv":
-        type_text = "سریال"
-        type_icon = "📺"
-    else:
-        type_text = "فیلم"
-        type_icon = "🎬"
-
-    rating = movie.get(
-        "vote_average"
+    type_text = (
+        "📺 سریال"
+        if media_type == "tv"
+        else "🎬 فیلم"
     )
-
-    try:
-
-        rating_text = (
-            f"{float(rating):.1f}/10"
-        )
-
-    except (
-        ValueError,
-        TypeError,
-    ):
-
-        rating_text = "—"
 
     overview = (
         movie.get("overview")
         or "توضیحی برای این عنوان ثبت نشده است."
     )
 
-    overview = str(
-        overview
-    ).strip()
+    if len(overview) > 450:
+        overview = overview[:447] + "..."
 
-    if len(overview) > 500:
-
-        overview = (
-            overview[:497]
-            + "..."
-        )
-
-    title_safe = escape(
-        str(title)
+    return (
+        f"🎬 <b>{title}</b>\n"
+        "━━━━━━━━━━━━━━━━\n\n"
+        f"📅 سال: <b>{year}</b>\n"
+        f"🎞 نوع: <b>{type_text}</b>\n"
+        f"⭐ امتیاز TMDb: <b>{rating_text}</b>\n\n"
+        f"📝 {overview}\n\n"
+        "━━━━━━━━━━━━━━━━"
     )
 
-    original_safe = (
-        escape(
-            str(original_title)
-        )
-        if original_title
-        and str(original_title).strip()
-        and str(original_title).strip()
-        != str(title).strip()
-        else None
-    )
-
-    overview_safe = escape(
-        overview
-    )
-
-    lines = [
-        f"{type_icon} <b>{title_safe}</b>",
-        "━━━━━━━━━━━━━━━━",
-        "",
-        f"📅 سال: <b>{year}</b>",
-        f"⭐ امتیاز TMDb: <b>{rating_text}</b>",
-    ]
-
-    if original_safe:
-
-        lines.extend(
-            [
-                f"🌐 نام اصلی: <b>{original_safe}</b>",
-            ]
-        )
-
-    lines.extend(
-        [
-            "",
-            f"📝 {overview_safe}",
-            "",
-            "━━━━━━━━━━━━━━━━",
-        ]
-    )
-
-    return "\n".join(
-        lines
-    )
-
-
-# ============================================================
-# WATCH SUMMARY
-# ============================================================
-
-def watch_summary(
-    providers: Optional[dict],
-):
-    """
-    یک خلاصه کوتاه برای نمایش روی کارت فیلم.
-    """
-
-    status = watch_status(
-        providers
-    )
-
-    if status == "free":
-        return "🆓 تماشای رایگان قانونی موجود است"
-
-    if status == "free_and_paid":
-        return "🆓 گزینه رایگان + 💳 گزینه‌های اشتراکی موجود است"
-
-    if status == "paid":
-        return "💳 گزینه قانونی پولی موجود است"
-
-    return "ℹ️ گزینه رایگان قانونی پیدا نشد"
-
-
-# ============================================================
-# EXPORT
-# ============================================================
 
 __all__ = [
-    "_tmdb_get",
     "search_movies",
-    "get_movie_details",
     "get_watch_providers",
-    "provider_name",
-    "provider_icon",
-    "provider_button_data",
     "providers_text",
-    "watch_status",
-    "watch_summary",
     "movie_text",
-    ]
+    "aparat_search_url",
+    "iranian_sources_text",
+    "IRANIAN_LEGAL_SOURCES",
+    "_tmdb_get",
+]
+```0
