@@ -7,26 +7,19 @@
 import asyncio
 import logging
 import os
-from threading import Thread
 from html import escape
-from urllib.parse import quote_plus
+from threading import Thread
 
 import aiohttp
 from flask import Flask
+from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import (
-    CallbackQuery,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    Message,
-)
-
-from dotenv import load_dotenv
+from aiogram.types import CallbackQuery, Message
 
 from data.imdb_top import IMDB_TOP
 from data.genre_extra import GENRE_EXTRA
@@ -41,6 +34,11 @@ from keyboards import (
     mbti_kb,
     mood_kb,
     quiz_genre_kb,
+    search_watch_kb,
+    search_results_kb,
+    movie_result_kb,
+    watch_kb,
+    region_kb,
 )
 
 from locales import t
@@ -49,7 +47,6 @@ from recommender import recommend
 from movie_db import (
     init_movie_db,
     save_movie,
-    search_local_movies,
 )
 
 from providers import (
@@ -58,7 +55,6 @@ from providers import (
     movie_text,
     providers_text,
 )
-
 
 # ============================================================
 # CONFIG
@@ -78,20 +74,16 @@ BOT_TOKEN = os.getenv(
     "",
 ).strip()
 
-OMDB_API_KEY = os.getenv(
-    "OMDB_API_KEY",
-    "",
-).strip()
-
 TMDB_API_KEY = os.getenv(
     "TMDB_API_KEY",
     "",
 ).strip()
 
-# منطقه پیش‌فرض
-# IR = ایران
-# GB = بریتانیا
-# US = آمریکا
+OMDB_API_KEY = os.getenv(
+    "OMDB_API_KEY",
+    "",
+).strip()
+
 DEFAULT_REGION = os.getenv(
     "WATCH_REGION",
     "IR",
@@ -99,7 +91,7 @@ DEFAULT_REGION = os.getenv(
 
 
 # ============================================================
-# FLASK / RENDER HEALTH SERVER
+# FLASK HEALTH SERVER
 # ============================================================
 
 app = Flask(__name__)
@@ -116,7 +108,6 @@ def health():
 
 
 def run_web_server():
-
     port = int(
         os.getenv(
             "PORT",
@@ -125,7 +116,7 @@ def run_web_server():
     )
 
     logger.info(
-        "Starting web server on port %s",
+        "Health server running on port %s",
         port,
     )
 
@@ -138,7 +129,6 @@ def run_web_server():
 
 
 def keep_alive():
-
     thread = Thread(
         target=run_web_server,
         daemon=True,
@@ -155,29 +145,21 @@ router = Router()
 
 
 # ============================================================
-# USER LANGUAGE
+# USER SETTINGS
 # ============================================================
 
 USER_LANG: dict[int, str] = {}
+USER_REGION: dict[int, str] = {}
 
 
 def lang_of(user_id: int) -> str:
-
     return USER_LANG.get(
         user_id,
         "fa",
     )
 
 
-# ============================================================
-# USER REGION
-# ============================================================
-
-USER_REGION: dict[int, str] = {}
-
-
 def region_of(user_id: int) -> str:
-
     return USER_REGION.get(
         user_id,
         DEFAULT_REGION,
@@ -189,7 +171,6 @@ def region_of(user_id: int) -> str:
 # ============================================================
 
 class Quiz(StatesGroup):
-
     mood = State()
     genre = State()
     mbti = State()
@@ -198,28 +179,33 @@ class Quiz(StatesGroup):
 
 
 class TextSearch(StatesGroup):
-
     actor = State()
     director = State()
     movie = State()
 
 
 class MovieSearch(StatesGroup):
-
     query = State()
 
 
 # ============================================================
-# CLEAN TEXT
+# HELPERS
 # ============================================================
 
-def clean(text: str) -> str:
-
-    if not text:
+def clean(text) -> str:
+    if text is None:
         return ""
 
     return escape(
         str(text)
+    )
+
+
+def language_code(user_id: int) -> str:
+    return (
+        "fa-IR"
+        if lang_of(user_id) == "fa"
+        else "en-US"
     )
 
 
@@ -237,8 +223,15 @@ async def cmd_start(
 
     user_id = message.from_user.id
 
-    if user_id not in USER_LANG:
-        USER_LANG[user_id] = "fa"
+    USER_LANG.setdefault(
+        user_id,
+        "fa",
+    )
+
+    USER_REGION.setdefault(
+        user_id,
+        DEFAULT_REGION,
+    )
 
     lang = lang_of(user_id)
 
@@ -271,7 +264,7 @@ async def cmd_cancel(
         t(
             "cancelled",
             lang,
-        )
+        ),
     )
 
     await message.answer(
@@ -299,6 +292,13 @@ async def set_lang(
         ":",
         1,
     )[1]
+
+    if lang not in ("fa", "en"):
+        await call.answer(
+            "Language error",
+            show_alert=True,
+        )
+        return
 
     USER_LANG[
         call.from_user.id
@@ -365,45 +365,8 @@ async def menu_home(
 
 
 # ============================================================
-# REGION SELECTOR
+# REGION
 # ============================================================
-
-def region_keyboard():
-
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-
-            [
-                InlineKeyboardButton(
-                    text="🇮🇷 ایران",
-                    callback_data="region:IR",
-                ),
-                InlineKeyboardButton(
-                    text="🇬🇧 بریتانیا",
-                    callback_data="region:GB",
-                ),
-            ],
-
-            [
-                InlineKeyboardButton(
-                    text="🇺🇸 آمریکا",
-                    callback_data="region:US",
-                ),
-                InlineKeyboardButton(
-                    text="🇨🇦 کانادا",
-                    callback_data="region:CA",
-                ),
-            ],
-
-            [
-                InlineKeyboardButton(
-                    text="⬅️ بازگشت",
-                    callback_data="menu:home",
-                ),
-            ],
-        ]
-    )
-
 
 @router.callback_query(
     F.data == "menu:region"
@@ -412,20 +375,20 @@ async def choose_region(
     call: CallbackQuery,
 ):
 
-    lang = lang_of(
+    region = region_of(
         call.from_user.id
     )
 
-    text = (
-        "🌍 <b>منطقه تماشا</b>\n\n"
-        "کشور خودت را انتخاب کن تا "
-        "سرویس‌های موجود برای همان منطقه "
-        "بررسی شوند."
-    )
-
     await call.message.edit_text(
-        text,
-        reply_markup=region_keyboard(),
+        (
+            "🌍 <b>منطقه تماشا</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "کشور را انتخاب کن تا سرویس‌های "
+            "قانونی ثبت‌شده برای همان منطقه "
+            "بررسی شوند.\n\n"
+            f"📍 منطقه فعلی: <b>{region}</b>"
+        ),
+        reply_markup=region_kb(),
     )
 
     await call.answer()
@@ -443,22 +406,35 @@ async def set_region(
         1,
     )[1].upper()
 
+    allowed = {
+        "IR",
+        "GB",
+        "US",
+        "CA",
+    }
+
+    if region not in allowed:
+        await call.answer(
+            "منطقه نامعتبر است.",
+            show_alert=True,
+        )
+        return
+
     USER_REGION[
         call.from_user.id
     ] = region
 
-    lang = lang_of(
-        call.from_user.id
-    )
-
     await call.message.edit_text(
         (
-            "✅ <b>منطقه ذخیره شد</b>\n\n"
+            "✅ <b>منطقه ذخیره شد</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
             f"🌍 منطقه: <b>{region}</b>\n\n"
-            "از این به بعد گزینه‌های تماشا "
+            "گزینه‌های تماشا از این به بعد "
             "بر اساس این منطقه بررسی می‌شوند."
         ),
-        reply_markup=main_menu_kb(lang),
+        reply_markup=main_menu_kb(
+            lang_of(call.from_user.id)
+        ),
     )
 
     await call.answer(
@@ -467,37 +443,44 @@ async def set_region(
 
 
 # ============================================================
-# MOVIE SEARCH MENU
+# SEARCH & WATCH CENTER
 # ============================================================
 
-def search_menu_keyboard():
+@router.callback_query(
+    F.data == "menu:search_watch"
+)
+async def search_watch_center(
+    call: CallbackQuery,
+):
 
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+    user_id = call.from_user.id
 
-            [
-                InlineKeyboardButton(
-                    text="🔎 جستجوی فیلم یا سریال",
-                    callback_data="search:start",
-                ),
-            ],
-
-            [
-                InlineKeyboardButton(
-                    text="🌍 تغییر منطقه",
-                    callback_data="menu:region",
-                ),
-            ],
-
-            [
-                InlineKeyboardButton(
-                    text="⬅️ منوی اصلی",
-                    callback_data="menu:home",
-                ),
-            ],
-        ]
+    region = region_of(
+        user_id
     )
 
+    await call.message.edit_text(
+        (
+            "🎬 <b>جستجو و تماشای فیلم</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "🔎 فیلم یا سریال موردنظرت را پیدا کن.\n\n"
+            "بعد از انتخاب عنوان، اطلاعات آن "
+            "و سرویس‌های قانونی قابل دسترس "
+            "نمایش داده می‌شوند.\n\n"
+            f"🌍 منطقه: <b>{region}</b>\n\n"
+            "👇 شروع کن:"
+        ),
+        reply_markup=search_watch_kb(
+            lang_of(user_id)
+        ),
+    )
+
+    await call.answer()
+
+
+# ============================================================
+# START SEARCH
+# ============================================================
 
 @router.callback_query(
     F.data == "search:start"
@@ -515,13 +498,14 @@ async def search_start(
 
     await call.message.edit_text(
         (
-            "🔎 <b>جستجوی فیلم و سریال</b>\n\n"
-            "نام فیلم یا سریال را بفرست.\n\n"
+            "🔎 <b>جستجوی فیلم و سریال</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "نام فیلم یا سریال را ارسال کن.\n\n"
             "مثلاً:\n"
             "🎬 Interstellar\n"
             "📺 Breaking Bad"
         ),
-        reply_markup=search_menu_keyboard(),
+        reply_markup=search_watch_kb(lang),
     )
 
     await state.set_state(
@@ -532,88 +516,20 @@ async def search_start(
 
 
 # ============================================================
-# SHOW MOVIE RESULT
+# MOVIE SEARCH
 # ============================================================
 
-def movie_result_keyboard(
-    tmdb_id: int,
-    media_type: str,
+async def perform_movie_search(
+    query: str,
+    user_id: int,
 ):
 
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-
-            [
-                InlineKeyboardButton(
-                    text="📺 گزینه‌های تماشا",
-                    callback_data=(
-                        f"watch:{media_type}:{tmdb_id}"
-                    ),
-                ),
-            ],
-
-            [
-                InlineKeyboardButton(
-                    text="🔎 جستجوی دوباره",
-                    callback_data="search:start",
-                ),
-
-                InlineKeyboardButton(
-                    text="🏠 خانه",
-                    callback_data="menu:home",
-                ),
-            ],
-        ]
+    return await search_movies(
+        query,
+        language=language_code(user_id),
+        limit=8,
     )
 
-
-async def send_movie_result(
-    message: Message,
-    movie: dict,
-):
-
-    tmdb_id = movie.get(
-        "id"
-    )
-
-    media_type = movie.get(
-        "_media_type",
-        "movie",
-    )
-
-    if not tmdb_id:
-        await message.answer(
-            "❌ نتیجه نامعتبر بود."
-        )
-        return
-
-    # ذخیره در دیتابیس
-    try:
-
-        save_movie(movie)
-
-    except Exception:
-
-        logger.exception(
-            "Could not save movie"
-        )
-
-    text = movie_text(
-        movie
-    )
-
-    await message.answer(
-        text,
-        reply_markup=movie_result_keyboard(
-            tmdb_id,
-            media_type,
-        ),
-    )
-
-
-# ============================================================
-# SEARCH HANDLER
-# ============================================================
 
 @router.message(
     MovieSearch.query
@@ -630,30 +546,23 @@ async def movie_search(
     if not query:
 
         await message.answer(
-            "❌ لطفاً نام فیلم یا سریال را بفرست."
+            "❌ لطفاً نام فیلم یا سریال را ارسال کن."
         )
 
         return
 
-    lang = lang_of(
-        message.from_user.id
-    )
-
     await message.answer(
-        "🔎 <b>در حال جستجو...</b>\n\n"
-        "یک لحظه صبر کن 🎬"
+        (
+            "🔎 <b>در حال جستجو...</b>\n\n"
+            "🎬 دارم بین نتایج TMDb می‌گردم..."
+        )
     )
 
     try:
 
-        results = await search_movies(
+        results = await perform_movie_search(
             query,
-            language=(
-                "fa-IR"
-                if lang == "fa"
-                else "en-US"
-            ),
-            limit=8,
+            message.from_user.id,
         )
 
     except Exception:
@@ -674,74 +583,29 @@ async def movie_search(
 
         await message.answer(
             (
-                "😕 <b>چیزی پیدا نشد</b>\n\n"
+                "😕 <b>نتیجه‌ای پیدا نشد</b>\n"
+                "━━━━━━━━━━━━━━━━\n\n"
                 f"🔎 جستجو: <b>{clean(query)}</b>\n\n"
                 "نام دیگری را امتحان کن."
             ),
-            reply_markup=search_menu_keyboard(),
+            reply_markup=search_watch_kb(
+                lang_of(message.from_user.id)
+            ),
         )
 
         await state.clear()
 
         return
 
-    # اگر چند نتیجه داریم
-    buttons = []
-
-    for movie in results:
-
-        title = (
-            movie.get("title")
-            or movie.get("name")
-            or "بدون نام"
-        )
-
-        media_type = movie.get(
-            "_media_type",
-            "movie",
-        )
-
-        tmdb_id = movie.get(
-            "id"
-        )
-
-        icon = (
-            "📺"
-            if media_type == "tv"
-            else "🎬"
-        )
-
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    text=(
-                        f"{icon} "
-                        f"{title[:45]}"
-                    ),
-                    callback_data=(
-                        f"result:{media_type}:{tmdb_id}"
-                    ),
-                )
-            ]
-        )
-
-    buttons.append(
-        [
-            InlineKeyboardButton(
-                text="⬅️ بازگشت",
-                callback_data="menu:home",
-            )
-        ]
-    )
-
     await message.answer(
         (
-            "🎬 <b>نتایج جستجو</b>\n\n"
+            "🎬 <b>نتایج جستجو</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
             f"🔎 «{clean(query)}»\n\n"
-            "یکی را انتخاب کن:"
+            "👇 عنوان موردنظر را انتخاب کن:"
         ),
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=buttons
+        reply_markup=search_results_kb(
+            results
         ),
     )
 
@@ -774,6 +638,18 @@ async def result_select(
 
     media_type = parts[1]
 
+    if media_type not in (
+        "movie",
+        "tv",
+    ):
+
+        await call.answer(
+            "نوع عنوان نامعتبر است.",
+            show_alert=True,
+        )
+
+        return
+
     try:
 
         tmdb_id = int(
@@ -789,8 +665,9 @@ async def result_select(
 
         return
 
-    # جستجوی محلی برای پیدا کردن نتیجه
-    # در صورت نبودن، دوباره جستجوی TMDb انجام می‌شود.
+    await call.answer(
+        "🎬 در حال دریافت اطلاعات..."
+    )
 
     movie = None
 
@@ -801,12 +678,8 @@ async def result_select(
         movie = await _tmdb_get(
             f"/{media_type}/{tmdb_id}",
             {
-                "language": (
-                    "fa-IR"
-                    if lang_of(
-                        call.from_user.id
-                    ) == "fa"
-                    else "en-US"
+                "language": language_code(
+                    call.from_user.id
                 )
             },
         )
@@ -819,16 +692,20 @@ async def result_select(
 
     if not movie:
 
-        await call.answer(
-            "اطلاعات پیدا نشد.",
-            show_alert=True,
+        await call.message.edit_text(
+            (
+                "😕 <b>اطلاعات پیدا نشد</b>\n"
+                "━━━━━━━━━━━━━━━━\n\n"
+                "لطفاً دوباره جستجو کن."
+            ),
+            reply_markup=search_watch_kb(
+                lang_of(call.from_user.id)
+            ),
         )
 
         return
 
-    movie["_media_type"] = (
-        media_type
-    )
+    movie["_media_type"] = media_type
 
     try:
 
@@ -846,13 +723,11 @@ async def result_select(
         movie_text(
             movie
         ),
-        reply_markup=movie_result_keyboard(
+        reply_markup=movie_result_kb(
             tmdb_id,
             media_type,
         ),
     )
-
-    await call.answer()
 
 
 # ============================================================
@@ -918,8 +793,15 @@ async def watch_providers(
             "Provider request failed"
         )
 
-        await call.message.answer(
-            "⚠️ دریافت سرویس‌های تماشا با مشکل مواجه شد."
+        await call.message.edit_text(
+            (
+                "⚠️ <b>خطا در دریافت سرویس‌ها</b>\n\n"
+                "لطفاً چند لحظه بعد دوباره امتحان کن."
+            ),
+            reply_markup=movie_result_kb(
+                tmdb_id,
+                media_type,
+            ),
         )
 
         return
@@ -935,6 +817,8 @@ async def watch_providers(
             "💡 می‌توانی منطقه تماشا را تغییر بدهی."
         )
 
+        provider_link = None
+
     else:
 
         text = (
@@ -943,57 +827,21 @@ async def watch_providers(
             + providers_text(
                 providers
             )
+            + "\n\n"
+            "ℹ️ این اطلاعات از بخش Watch Providers "
+            "در TMDb دریافت شده است."
         )
 
-        text += (
-            "\n\n"
-            "ℹ️ اطلاعات سرویس‌ها از داده‌های "
-            "Watch Providers در TMDb است."
+        provider_link = providers.get(
+            "link"
         )
-
-    buttons = []
-
-    # لینک رسمی TMDb / JustWatch
-    provider_link = (
-        providers.get("link")
-        if providers
-        else None
-    )
-
-    if provider_link:
-
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    text="🔗 مشاهده گزینه‌های رسمی",
-                    url=provider_link,
-                )
-            ]
-        )
-
-    buttons.extend(
-        [
-            [
-                InlineKeyboardButton(
-                    text="🌍 تغییر منطقه",
-                    callback_data="menu:region",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="⬅️ بازگشت به فیلم",
-                    callback_data=(
-                        f"result:{media_type}:{tmdb_id}"
-                    ),
-                ),
-            ],
-        ]
-    )
 
     await call.message.edit_text(
         text[:4090],
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=buttons
+        reply_markup=watch_kb(
+            media_type=media_type,
+            tmdb_id=tmdb_id,
+            provider_link=provider_link,
         ),
     )
 
@@ -1013,21 +861,15 @@ def _fmt_entry(
     lang,
 ):
 
-    if kind == "series":
-
-        kind_label = (
-            "سریال"
-            if lang == "fa"
-            else "Series"
-        )
-
-    else:
-
-        kind_label = (
-            "فیلم"
-            if lang == "fa"
-            else "Movie"
-        )
+    kind_label = (
+        "سریال"
+        if kind == "series" and lang == "fa"
+        else "فیلم"
+        if lang == "fa"
+        else "Series"
+        if kind == "series"
+        else "Movie"
+    )
 
     rt_s = (
         f"{rt}%"
@@ -1036,13 +878,13 @@ def _fmt_entry(
     )
 
     meta_s = (
-        f"{meta}"
+        str(meta)
         if meta is not None
         else "—"
     )
 
     return (
-        f"🎬 <b>{clean(title)}</b> "
+        f"{idx}. 🎬 <b>{clean(title)}</b> "
         f"({year})\n"
         f"   {kind_label} • "
         f"⭐ IMDb {imdb} • "
@@ -1090,19 +932,15 @@ async def top250(
     text = (
         "🏆 <b>برترین‌های IMDb</b>\n"
         "━━━━━━━━━━━━━━━━\n\n"
-        + "\n\n".join(
-            lines
-        )
+        + "\n\n".join(lines)
         + "\n\n"
-        "💡 برای دیدن گزینه‌های تماشا، "
-        "هر عنوان را جداگانه جستجو کن."
+        "💡 برای مشاهده گزینه‌های قانونی تماشا، "
+        "عنوان را از بخش جستجو پیدا کن."
     )
 
     await call.message.edit_text(
         text[:4090],
-        reply_markup=back_kb(
-            lang
-        ),
+        reply_markup=back_kb(lang),
     )
 
     await call.answer()
@@ -1128,9 +966,7 @@ async def menu_genre(
             "pick_genre",
             lang,
         ),
-        reply_markup=genre_kb(
-            lang
-        ),
+        reply_markup=genre_kb(lang),
     )
 
     await call.answer()
@@ -1169,18 +1005,17 @@ async def show_genre(
                 )
             )
 
-    for (
-        title,
-        year,
-        kind,
-        imdb,
-        rt,
-        meta,
-        genres,
-    ) in GENRE_EXTRA.get(
+    for item in GENRE_EXTRA.get(
         genre,
         [],
     ):
+
+        title = item[0]
+        year = item[1]
+        kind = item[2]
+        imdb = item[3]
+        rt = item[4]
+        meta = item[5]
 
         items.append(
             (
@@ -1211,12 +1046,10 @@ async def show_genre(
                 item
             )
 
-    uniq = uniq[:25]
-
     lines = []
 
     for i, row in enumerate(
-        uniq,
+        uniq[:25],
         1,
     ):
 
@@ -1228,21 +1061,15 @@ async def show_genre(
             )
         )
 
-    title_line = (
+    text = (
         f"🎭 <b>{clean(genre)}</b>\n"
         "━━━━━━━━━━━━━━━━\n\n"
+        + "\n\n".join(lines)
     )
 
     await call.message.edit_text(
-        (
-            title_line
-            + "\n\n".join(
-                lines
-            )
-        )[:4090],
-        reply_markup=genre_kb(
-            lang
-        ),
+        text[:4090],
+        reply_markup=genre_kb(lang),
     )
 
     await call.answer()
@@ -1275,10 +1102,8 @@ async def upcoming(
 
                 params = {
                     "api_key": TMDB_API_KEY,
-                    "language": (
-                        "fa-IR"
-                        if lang == "fa"
-                        else "en-US"
+                    "language": language_code(
+                        call.from_user.id
                     ),
                     "page": 1,
                 }
@@ -1312,27 +1137,25 @@ async def upcoming(
 
                 lines.append(
                     f"🎬 <b>{clean(title)}</b>\n"
-                    f"   📅 {date}"
+                    f"   📅 {clean(date)}"
                 )
 
-            text = (
-                "📅 <b>در انتظار اکران</b>\n"
-                "━━━━━━━━━━━━━━━━\n\n"
-                + "\n\n".join(
-                    lines
+            if lines:
+
+                text = (
+                    "📅 <b>در انتظار اکران</b>\n"
+                    "━━━━━━━━━━━━━━━━\n\n"
+                    + "\n\n".join(lines)
                 )
-            )
 
-            await call.message.edit_text(
-                text[:4090],
-                reply_markup=back_kb(
-                    lang
-                ),
-            )
+                await call.message.edit_text(
+                    text[:4090],
+                    reply_markup=back_kb(lang),
+                )
 
-            await call.answer()
+                await call.answer()
 
-            return
+                return
 
         except Exception:
 
@@ -1346,23 +1169,19 @@ async def upcoming(
 
         lines.append(
             f"🎬 <b>{clean(title)}</b>\n"
-            f"   📅 {date}\n"
+            f"   📅 {clean(date)}\n"
             f"   {clean(desc)}"
         )
 
     text = (
         "📅 <b>در انتظار اکران</b>\n"
         "━━━━━━━━━━━━━━━━\n\n"
-        + "\n\n".join(
-            lines
-        )
+        + "\n\n".join(lines)
     )
 
     await call.message.edit_text(
         text[:4090],
-        reply_markup=back_kb(
-            lang
-        ),
+        reply_markup=back_kb(lang),
     )
 
     await call.answer()
@@ -1389,9 +1208,7 @@ async def ask_actor(
             "ask_actor_name",
             lang,
         ),
-        reply_markup=back_kb(
-            lang
-        ),
+        reply_markup=back_kb(lang),
     )
 
     await state.set_state(
@@ -1409,13 +1226,13 @@ async def do_actor_search(
     state: FSMContext,
 ):
 
-    lang = lang_of(
-        message.from_user.id
-    )
-
     query = (
         message.text or ""
     ).strip()
+
+    lang = lang_of(
+        message.from_user.id
+    )
 
     result = ACTORS.get(
         query.lower()
@@ -1431,33 +1248,21 @@ async def do_actor_search(
                 "/search/person",
                 {
                     "query": query,
-                    "language": (
-                        "fa-IR"
-                        if lang == "fa"
-                        else "en-US"
+                    "language": language_code(
+                        message.from_user.id
                     ),
                 },
             )
 
-            if data and data.get(
-                "results"
-            ):
+            if data and data.get("results"):
 
-                person = data[
-                    "results"
-                ][0]
-
-                person_id = person[
-                    "id"
-                ]
+                person = data["results"][0]
 
                 credits = await _tmdb_get(
-                    f"/person/{person_id}/combined_credits",
+                    f"/person/{person['id']}/combined_credits",
                     {
-                        "language": (
-                            "fa-IR"
-                            if lang == "fa"
-                            else "en-US"
+                        "language": language_code(
+                            message.from_user.id
                         ),
                     },
                 )
@@ -1467,10 +1272,7 @@ async def do_actor_search(
                     result = []
 
                     for item in sorted(
-                        credits.get(
-                            "cast",
-                            []
-                        ),
+                        credits.get("cast", []),
                         key=lambda x: x.get(
                             "popularity",
                             0,
@@ -1484,10 +1286,7 @@ async def do_actor_search(
                         )
 
                         if title:
-
-                            result.append(
-                                title
-                            )
+                            result.append(title)
 
         except Exception:
 
@@ -1512,22 +1311,16 @@ async def do_actor_search(
             (
                 f"🎭 <b>{clean(query)}</b>\n"
                 "━━━━━━━━━━━━━━━━\n\n"
-                + "\n".join(
-                    lines
-                )
+                + "\n".join(lines)
             ),
-            reply_markup=back_kb(
-                lang
-            ),
+            reply_markup=back_kb(lang),
         )
 
     else:
 
         await message.answer(
             "😕 بازیگر موردنظر پیدا نشد.",
-            reply_markup=back_kb(
-                lang
-            ),
+            reply_markup=back_kb(lang),
         )
 
     await state.clear()
@@ -1554,9 +1347,7 @@ async def ask_director(
             "ask_director_name",
             lang,
         ),
-        reply_markup=back_kb(
-            lang
-        ),
+        reply_markup=back_kb(lang),
     )
 
     await state.set_state(
@@ -1574,13 +1365,13 @@ async def do_director_search(
     state: FSMContext,
 ):
 
-    lang = lang_of(
-        message.from_user.id
-    )
-
     query = (
         message.text or ""
     ).strip()
+
+    lang = lang_of(
+        message.from_user.id
+    )
 
     result = DIRECTORS.get(
         query.lower()
@@ -1596,17 +1387,13 @@ async def do_director_search(
                 "/search/person",
                 {
                     "query": query,
-                    "language": (
-                        "fa-IR"
-                        if lang == "fa"
-                        else "en-US"
+                    "language": language_code(
+                        message.from_user.id
                     ),
                 },
             )
 
-            if data and data.get(
-                "results"
-            ):
+            if data and data.get("results"):
 
                 person_id = data[
                     "results"
@@ -1615,10 +1402,8 @@ async def do_director_search(
                 credits = await _tmdb_get(
                     f"/person/{person_id}/combined_credits",
                     {
-                        "language": (
-                            "fa-IR"
-                            if lang == "fa"
-                            else "en-US"
+                        "language": language_code(
+                            message.from_user.id
                         ),
                     },
                 )
@@ -1630,7 +1415,7 @@ async def do_director_search(
                     for item in sorted(
                         credits.get(
                             "crew",
-                            []
+                            [],
                         ),
                         key=lambda x: x.get(
                             "popularity",
@@ -1645,10 +1430,7 @@ async def do_director_search(
                         )
 
                         if title:
-
-                            result.append(
-                                title
-                            )
+                            result.append(title)
 
         except Exception:
 
@@ -1673,22 +1455,16 @@ async def do_director_search(
             (
                 f"🎬 <b>{clean(query)}</b>\n"
                 "━━━━━━━━━━━━━━━━\n\n"
-                + "\n".join(
-                    lines
-                )
+                + "\n".join(lines)
             ),
-            reply_markup=back_kb(
-                lang
-            ),
+            reply_markup=back_kb(lang),
         )
 
     else:
 
         await message.answer(
             "😕 کارگردان موردنظر پیدا نشد.",
-            reply_markup=back_kb(
-                lang
-            ),
+            reply_markup=back_kb(lang),
         )
 
     await state.clear()
@@ -1715,9 +1491,7 @@ async def ask_compare(
             "ask_movie_name",
             lang,
         ),
-        reply_markup=back_kb(
-            lang
-        ),
+        reply_markup=back_kb(lang),
     )
 
     await state.set_state(
@@ -1735,13 +1509,13 @@ async def do_compare(
     state: FSMContext,
 ):
 
-    lang = lang_of(
-        message.from_user.id
-    )
-
     query = (
         message.text or ""
     ).strip()
+
+    lang = lang_of(
+        message.from_user.id
+    )
 
     imdb = None
     rt = None
@@ -1768,33 +1542,25 @@ async def do_compare(
 
             async with aiohttp.ClientSession() as session:
 
-                url = (
-                    "https://www.omdbapi.com/"
-                )
-
-                params = {
-                    "apikey": OMDB_API_KEY,
-                    "t": query,
-                }
-
                 async with session.get(
-                    url,
-                    params=params,
+                    "https://www.omdbapi.com/",
+                    params={
+                        "apikey": OMDB_API_KEY,
+                        "t": query,
+                    },
                     timeout=10,
                 ) as response:
 
                     data = await response.json()
 
-            if data.get(
-                "Response"
-            ) == "True":
+            if data.get("Response") == "True":
 
                 for source in data.get(
                     "Ratings",
                     [],
                 ):
 
-                    source_name = source.get(
+                    name = source.get(
                         "Source"
                     )
 
@@ -1803,34 +1569,14 @@ async def do_compare(
                         "",
                     )
 
-                    if source_name == (
-                        "Internet Movie Database"
-                    ):
+                    if name == "Internet Movie Database":
+                        imdb = value.split("/")[0]
 
-                        imdb = (
-                            value.split(
-                                "/"
-                            )[0]
-                        )
+                    elif name == "Rotten Tomatoes":
+                        rt = value.replace("%", "")
 
-                    elif source_name == (
-                        "Rotten Tomatoes"
-                    ):
-
-                        rt = value.replace(
-                            "%",
-                            "",
-                        )
-
-                    elif source_name == (
-                        "Metacritic"
-                    ):
-
-                        meta = (
-                            value.split(
-                                "/"
-                            )[0]
-                        )
+                    elif name == "Metacritic":
+                        meta = value.split("/")[0]
 
         except Exception:
 
@@ -1862,16 +1608,14 @@ async def do_compare(
 
     await message.answer(
         text,
-        reply_markup=back_kb(
-            lang
-        ),
+        reply_markup=back_kb(lang),
     )
 
     await state.clear()
 
 
 # ============================================================
-# RECOMMENDATION QUIZ
+# RECOMMENDATION
 # ============================================================
 
 @router.callback_query(
@@ -1888,19 +1632,10 @@ async def start_quiz(
 
     await call.message.edit_text(
         t(
-            "start_quiz",
-            lang,
-        )
-    )
-
-    await call.message.answer(
-        t(
             "q_mood",
             lang,
         ),
-        reply_markup=mood_kb(
-            lang
-        ),
+        reply_markup=mood_kb(lang),
     )
 
     await state.set_state(
@@ -1935,9 +1670,7 @@ async def quiz_mood(
             "q_genre",
             lang,
         ),
-        reply_markup=quiz_genre_kb(
-            lang
-        ),
+        reply_markup=quiz_genre_kb(lang),
     )
 
     await state.set_state(
@@ -1972,9 +1705,7 @@ async def quiz_genre(
             "q_mbti",
             lang,
         ),
-        reply_markup=mbti_kb(
-            lang
-        ),
+        reply_markup=mbti_kb(lang),
     )
 
     await state.set_state(
@@ -2026,10 +1757,6 @@ async def quiz_liked(
     state: FSMContext,
 ):
 
-    lang = lang_of(
-        message.from_user.id
-    )
-
     text = (
         message.text or ""
     ).strip()
@@ -2051,7 +1778,7 @@ async def quiz_liked(
     await message.answer(
         t(
             "q_disliked",
-            lang,
+            lang_of(message.from_user.id),
         )
     )
 
@@ -2096,19 +1823,10 @@ async def quiz_disliked(
     data = await state.get_data()
 
     results = recommend(
-        genre_pref=data.get(
-            "genre"
-        ),
-        mood=data.get(
-            "mood"
-        ),
-        mbti=data.get(
-            "mbti"
-        ),
-        liked_titles=data.get(
-            "liked",
-            [],
-        ),
+        genre_pref=data.get("genre"),
+        mood=data.get("mood"),
+        mbti=data.get("mbti"),
+        liked_titles=data.get("liked", []),
         disliked_titles=disliked,
         top_n=6,
     )
@@ -2127,7 +1845,7 @@ async def quiz_disliked(
         )
 
         meta_s = (
-            f"{item['meta']}"
+            str(item["meta"])
             if item["meta"] is not None
             else "—"
         )
@@ -2149,19 +1867,15 @@ async def quiz_disliked(
             lang,
         )
         + "\n\n"
-        + "\n\n".join(
-            lines
-        ),
-        reply_markup=back_kb(
-            lang
-        ),
+        + "\n\n".join(lines),
+        reply_markup=back_kb(lang),
     )
 
     await state.clear()
 
 
 # ============================================================
-# FALLBACK TEXT SEARCH
+# FALLBACK SEARCH
 # ============================================================
 
 @router.message()
@@ -2173,43 +1887,30 @@ async def fallback_text_search(
         message.text or ""
     ).strip()
 
-    if not text:
+    if not text or text.startswith("/"):
         return
-
-    # جلوگیری از پاسخ به دستورات
-    if text.startswith("/"):
-        return
-
-    lang = lang_of(
-        message.from_user.id
-    )
 
     if not TMDB_API_KEY:
 
         await message.answer(
             (
                 "⚠️ <b>TMDb API تنظیم نشده</b>\n\n"
-                "لطفاً TMDB_API_KEY را در "
-                "Environment Variables قرار بده."
+                "متغیر <code>TMDB_API_KEY</code> "
+                "را در Environment Variables قرار بده."
             )
         )
 
         return
 
     await message.answer(
-        "🔎 در حال پیدا کردن فیلم و سریال..."
+        "🔎 <b>در حال جستجو...</b>"
     )
 
     try:
 
-        results = await search_movies(
+        results = await perform_movie_search(
             text,
-            language=(
-                "fa-IR"
-                if lang == "fa"
-                else "en-US"
-            ),
-            limit=8,
+            message.from_user.id,
         )
 
     except Exception:
@@ -2235,53 +1936,14 @@ async def fallback_text_search(
 
         return
 
-    buttons = []
-
-    for movie in results:
-
-        title = (
-            movie.get("title")
-            or movie.get("name")
-            or "Unknown"
-        )
-
-        media_type = movie.get(
-            "_media_type",
-            "movie",
-        )
-
-        tmdb_id = movie.get(
-            "id"
-        )
-
-        icon = (
-            "📺"
-            if media_type == "tv"
-            else "🎬"
-        )
-
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    text=(
-                        f"{icon} "
-                        f"{title[:45]}"
-                    ),
-                    callback_data=(
-                        f"result:{media_type}:{tmdb_id}"
-                    ),
-                )
-            ]
-        )
-
     await message.answer(
         (
             "🎬 <b>نتایج پیدا شد</b>\n"
             "━━━━━━━━━━━━━━━━\n\n"
-            "عنوان موردنظر را انتخاب کن:"
+            "👇 عنوان موردنظر را انتخاب کن:"
         ),
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=buttons
+        reply_markup=search_results_kb(
+            results
         ),
     )
 
@@ -2307,12 +1969,19 @@ async def main():
             "TMDB_API_KEY is not configured."
         )
 
-    # ساخت خودکار movies.db
-    init_movie_db()
+    try:
 
-    logger.info(
-        "Movie database initialized."
-    )
+        init_movie_db()
+
+        logger.info(
+            "Movie database initialized."
+        )
+
+    except Exception:
+
+        logger.exception(
+            "Could not initialize movie database"
+        )
 
     bot = Bot(
         token=BOT_TOKEN
@@ -2366,4 +2035,4 @@ if __name__ == "__main__":
 
         logger.info(
             "MovieBot stopped."
-)
+        )
