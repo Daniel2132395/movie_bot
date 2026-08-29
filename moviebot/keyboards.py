@@ -1,6 +1,5 @@
 # ============================================================
-# MovieBot — Keyboards
-# aiogram 3.x
+# keyboards.py - کیبوردهای کامل MovieBot
 # ============================================================
 
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -86,11 +85,14 @@ def search_results_kb(results: list) -> InlineKeyboardMarkup:
         if not provider_id:
             continue
 
+        # آیکون مناسب بر اساس منبع
+        icon = "🎬" if provider_id == "tmdb" else "📚" if provider_id == "local" else "⭐"
+
         if len(title) > 42:
             title = title[:39] + "..."
 
         b.button(
-            text=f"🎬  {title}",
+            text=f"{icon}  {title}",
             callback_data=f"provider:{provider_id}"
         )
 
@@ -100,12 +102,109 @@ def search_results_kb(results: list) -> InlineKeyboardMarkup:
 
 
 # ============================================================
-# MOVIE RESULT
+# MOVIE ACTIONS (دانلود و تماشا)
+# ============================================================
+
+def movie_actions_kb(query: str) -> InlineKeyboardMarkup:
+    """کیبورد اقدامات فیلم - دانلود و تماشا"""
+    b = InlineKeyboardBuilder()
+    
+    b.button(
+        text="📥  لینک‌های دانلود",
+        callback_data=f"download:{query}"
+    )
+    b.button(
+        text="▶️  لینک‌های تماشا آنلاین",
+        callback_data=f"watch_online:{query}"
+    )
+    b.button(
+        text="🎬  اطلاعات فیلم",
+        callback_data=f"info:{query}"
+    )
+    b.button(
+        text="🔎  جستجوی دوباره",
+        callback_data="search:start"
+    )
+    b.button(
+        text="🏠  منوی اصلی",
+        callback_data="menu:home"
+    )
+    
+    b.adjust(1, 1, 2)
+    return b.as_markup()
+
+
+# ============================================================
+# DOWNLOAD LINKS
+# ============================================================
+
+def download_links_kb(links: list, query: str) -> InlineKeyboardMarkup:
+    """کیبورد نمایش لینک‌های دانلود"""
+    b = InlineKeyboardBuilder()
+    
+    for link in links[:10]:
+        title = link.get("title", "لینک")
+        url = link.get("url", "")
+        service = link.get("service", "سرویس")
+        
+        if not url:
+            continue
+            
+        if len(title) > 35:
+            title = title[:32] + "..."
+        
+        b.button(
+            text=f"📥  {title}",
+            url=url,
+        )
+    
+    b.button(text="🔎  جستجوی دوباره", callback_data="search:start")
+    b.button(text="🏠  منوی اصلی", callback_data="menu:home")
+    b.adjust(1)
+    return b.as_markup()
+
+
+# ============================================================
+# WATCH LINKS
+# ============================================================
+
+def watch_links_kb(links: list, query: str) -> InlineKeyboardMarkup:
+    """کیبورد نمایش لینک‌های تماشا"""
+    b = InlineKeyboardBuilder()
+    
+    for link in links[:10]:
+        title = link.get("title", "لینک")
+        url = link.get("url", "")
+        service = link.get("service", "سرویس")
+        
+        if not url:
+            continue
+            
+        if len(title) > 35:
+            title = title[:32] + "..."
+        
+        b.button(
+            text=f"▶️  {title}",
+            url=url,
+        )
+    
+    b.button(text="🔎  جستجوی دوباره", callback_data="search:start")
+    b.button(text="🏠  منوی اصلی", callback_data="menu:home")
+    b.adjust(1)
+    return b.as_markup()
+
+
+# ============================================================
+# MOVIE RESULT (قدیمی - برای سازگاری)
 # ============================================================
 
 def movie_result_kb(provider_id: str, provider_url: str, query: str) -> InlineKeyboardMarkup:
+    """کیبورد نتیجه فیلم - برای سازگاری با کد قدیمی"""
     b = InlineKeyboardBuilder()
-    b.button(text="🔗  ورود به صفحه رسمی سرویس", url=provider_url)
+    if provider_url:
+        b.button(text="🔗  مشاهده در سرویس", url=provider_url)
+    b.button(text="📥  لینک دانلود", callback_data=f"download:{query}")
+    b.button(text="▶️  تماشا آنلاین", callback_data=f"watch_online:{query}")
     b.button(text="🔎  جستجوی دوباره", callback_data="search:start")
     b.button(text="🏠  منوی اصلی", callback_data="menu:home")
     b.adjust(1)
@@ -235,8 +334,11 @@ __all__ = [
     "lang_kb",
     "main_menu_kb",
     "search_watch_kb",
-    "movie_result_kb",
     "search_results_kb",
+    "movie_result_kb",
+    "movie_actions_kb",
+    "download_links_kb",
+    "watch_links_kb",
     "region_kb",
     "genre_kb",
     "mood_kb",
@@ -244,4 +346,4 @@ __all__ = [
     "mbti_kb",
     "back_kb",
     "search_again_kb",
-]
+        ]
