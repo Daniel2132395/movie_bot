@@ -1,7 +1,9 @@
 import asyncio
 import logging
 import os
+from datetime import date, datetime
 from threading import Thread
+from urllib.parse import quote_plus
 
 import aiohttp
 from flask import Flask
@@ -33,7 +35,7 @@ from locales import t
 from recommender import recommend
 
 # ============================================================
-# ADMIN SYSTEM
+# ADMIN
 # ============================================================
 
 from admin import (
@@ -64,7 +66,7 @@ TMDB_API_KEY = os.getenv("TMDB_API_KEY", "").strip()
 
 
 # ============================================================
-# FLASK SERVER FOR RENDER
+# FLASK / RENDER
 # ============================================================
 
 app = Flask(__name__)
@@ -106,14 +108,14 @@ def keep_alive():
 
 
 # ============================================================
-# BOT ROUTER
+# ROUTER
 # ============================================================
 
 router = Router()
 
 
 # ============================================================
-# LANGUAGE STORAGE
+# USER LANGUAGE
 # ============================================================
 
 USER_LANG: dict[int, str] = {}
@@ -145,6 +147,181 @@ class TextSearch(StatesGroup):
 
 
 # ============================================================
+# UI FORMATTERS
+# ============================================================
+
+DIVIDER = "━━━━━━━━━━━━━━"
+
+
+def clean_text(value):
+    if value is None:
+        return "—"
+
+    value = str(value).strip()
+
+    if not value:
+        return "—"
+
+    return value
+
+
+def movie_card(
+    title,
+    year=None,
+    imdb=None,
+    rt=None,
+    meta=None,
+    genres=None,
+    lang="en",
+):
+    """
+    خروجی استاندارد اطلاعات فیلم
+    """
+
+    title = clean_text(title)
+
+    lines = [
+        f"🎬 <b>{title}</b>",
+    ]
+
+    if year:
+        lines.append(
+            f"📅 {clean_text(year)}"
+        )
+
+    scores = []
+
+    if imdb is not None:
+        scores.append(
+            f"⭐ IMDb {imdb}"
+        )
+
+    if rt is not None:
+        scores.append(
+            f"🍅 RT {rt}%"
+        )
+
+    if meta is not None:
+        scores.append(
+            f"🎯 Metacritic {meta}"
+        )
+
+    if scores:
+        lines.append(
+            "   ".join(scores)
+        )
+
+    if genres:
+        if isinstance(genres, (list, tuple)):
+            genre_text = ", ".join(
+                str(x)
+                for x in genres
+                if x
+            )
+        else:
+            genre_text = str(genres)
+
+        if genre_text:
+            lines.append(
+                f"🏷 {genre_text}"
+            )
+
+    return "\n".join(lines)
+
+
+def section_header(
+    title,
+    emoji="🎬",
+):
+    return (
+        f"{emoji} <b>{title}</b>\n"
+        f"{DIVIDER}\n"
+    )
+
+
+def footer(lang="en"):
+    if lang == "fa":
+        return (
+            f"\n{DIVIDER}\n"
+            "🎬 <b>MovieBot</b>"
+        )
+
+    return (
+        f"\n{DIVIDER}\n"
+        "🎬 <b>MovieBot</b>"
+    )
+
+
+# ============================================================
+# DATE FORMAT
+# ============================================================
+
+MONTHS_EN = {
+    1: "January",
+    2: "February",
+    3: "March",
+    4: "April",
+    5: "May",
+    6: "June",
+    7: "July",
+    8: "August",
+    9: "September",
+    10: "October",
+    11: "November",
+    12: "December",
+}
+
+
+MONTHS_FA = {
+    1: "ژانویه",
+    2: "فوریه",
+    3: "مارس",
+    4: "آوریل",
+    5: "مه",
+    6: "ژوئن",
+    7: "ژوئیه",
+    8: "اوت",
+    9: "سپتامبر",
+    10: "اکتبر",
+    11: "نوامبر",
+    12: "دسامبر",
+}
+
+
+def format_date(
+    value,
+    lang="en",
+):
+    if not value:
+        return "TBA"
+
+    try:
+
+        dt = datetime.strptime(
+            str(value),
+            "%Y-%m-%d",
+        )
+
+        if lang == "fa":
+
+            return (
+                f"{dt.day} "
+                f"{MONTHS_FA[dt.month]} "
+                f"{dt.year}"
+            )
+
+        return (
+            f"{MONTHS_EN[dt.month]} "
+            f"{dt.day}, "
+            f"{dt.year}"
+        )
+
+    except Exception:
+
+        return str(value)
+
+
+# ============================================================
 # START
 # ============================================================
 
@@ -159,10 +336,8 @@ async def cmd_start(
     if user is None:
         return
 
-    # Register/update user
     await track_user(user)
 
-    # Track usage
     await track_usage(
         user.id,
         "start",
@@ -262,10 +437,6 @@ async def set_lang(
     await call.answer()
 
 
-# ============================================================
-# HOME
-# ============================================================
-
 @router.callback_query(
     F.data == "menu:home"
 )
@@ -300,10 +471,6 @@ async def menu_home(
     await call.answer()
 
 
-# ============================================================
-# LANGUAGE MENU
-# ============================================================
-
 @router.callback_query(
     F.data == "menu:lang"
 )
@@ -336,56 +503,8 @@ async def menu_lang(
 
 
 # ============================================================
-# TOP IMDb
+# IMDb TOP
 # ============================================================
-
-def _fmt_entry(
-    idx,
-    title,
-    year,
-    kind,
-    imdb,
-    rt,
-    meta,
-    lang,
-):
-
-    if kind == "series":
-
-        kind_label = (
-            "سریال"
-            if lang == "fa"
-            else "Series"
-        )
-
-    else:
-
-        kind_label = (
-            "فیلم"
-            if lang == "fa"
-            else "Movie"
-        )
-
-    rt_s = (
-        f"{rt}%"
-        if rt is not None
-        else "—"
-    )
-
-    meta_s = (
-        f"{meta}"
-        if meta is not None
-        else "—"
-    )
-
-    return (
-        f"{idx}. <b>{title}</b> ({year}) "
-        f"[{kind_label}]\n"
-        f"    IMDb: {imdb} | "
-        f"RT: {rt_s} | "
-        f"Metacritic: {meta_s}"
-    )
-
 
 @router.callback_query(
     F.data == "menu:top250"
@@ -412,50 +531,44 @@ async def top250(
         key=lambda r: -r[4],
     )
 
-    lines = [
-        _fmt_entry(
-            i + 1,
-            r[1],
-            r[2],
-            r[3],
-            r[4],
-            r[5],
-            r[6],
-            lang,
+    cards = []
+
+    for i, r in enumerate(
+        sorted_list[:25],
+        1,
+    ):
+
+        card = movie_card(
+            title=r[1],
+            year=r[2],
+            imdb=r[4],
+            rt=r[5],
+            meta=r[6],
+            lang=lang,
         )
-        for i, r in enumerate(
-            sorted_list[:40]
+
+        cards.append(
+            f"<b>{i}.</b>\n{card}"
         )
-    ]
 
     if lang == "fa":
 
-        header = (
-            "🏆 <b>برترین‌های امتیاز IMDb</b> "
-            "(نسخه فشرده — ۴۰ مورد اول از دیتاست داخلی)\n\n"
-        )
-
-        footer = (
-            "\n\nℹ️ برای فهرست کامل و همیشه به‌روز "
-            "۲۵۰ تایی، کلید رایگان OMDb/TMDb را در .env قرار دهید."
+        header = section_header(
+            "برترین فیلم‌ها",
+            "🏆",
         )
 
     else:
 
-        header = (
-            "🏆 <b>Top IMDb-rated titles</b> "
-            "(showing top 40 of the bundled dataset)\n\n"
-        )
-
-        footer = (
-            "\n\nℹ️ For the complete, always-current "
-            "250-title list, add a free OMDb/TMDb key in .env."
+        header = section_header(
+            "Top IMDb Movies",
+            "🏆",
         )
 
     text = (
         header
-        + "\n\n".join(lines)
-        + footer
+        + "\n\n".join(cards)
+        + footer(lang)
     )
 
     await call.message.edit_text(
@@ -467,7 +580,7 @@ async def top250(
 
 
 # ============================================================
-# GENRES
+# GENRE
 # ============================================================
 
 @router.callback_query(
@@ -585,36 +698,49 @@ async def show_genre(
                 item
             )
 
-    uniq = uniq[:25]
+    uniq = uniq[:15]
 
-    lines = [
-        _fmt_entry(
-            i + 1,
-            *row,
-            lang,
+    cards = []
+
+    for i, row in enumerate(
+        uniq,
+        1,
+    ):
+
+        cards.append(
+            f"<b>{i}.</b>\n"
+            + movie_card(
+                title=row[0],
+                year=row[1],
+                imdb=row[3],
+                rt=row[4],
+                meta=row[5],
+                lang=lang,
+            )
         )
-        for i, row in enumerate(
-            uniq
-        )
-    ]
 
-    if lang == "en":
+    if lang == "fa":
 
-        title_line = (
-            f"🎬 <b>{genre}</b> — Top picks\n\n"
+        header = section_header(
+            f"فیلم‌های {genre}",
+            "🎬",
         )
 
     else:
 
-        title_line = (
-            f"🎬 <b>{genre}</b> — برترین‌ها\n\n"
+        header = section_header(
+            f"{genre} Movies",
+            "🎬",
         )
 
+    text = (
+        header
+        + "\n\n".join(cards)
+        + footer(lang)
+    )
+
     await call.message.edit_text(
-        (
-            title_line
-            + "\n\n".join(lines)
-        )[:4090],
+        text[:4090],
         reply_markup=genre_kb(lang),
     )
 
@@ -645,6 +771,10 @@ async def upcoming(
         user.id
     )
 
+    # --------------------------------------------------------
+    # TMDB LIVE
+    # --------------------------------------------------------
+
     if TMDB_API_KEY:
 
         try:
@@ -652,9 +782,15 @@ async def upcoming(
             async with aiohttp.ClientSession() as session:
 
                 url = (
-                    "https://api.themoviedb.org/3/movie/upcoming"
+                    "https://api.themovied.org/3/movie/upcoming"
                     f"?api_key={TMDB_API_KEY}"
                     f"&language={'fa' if lang == 'fa' else 'en'}-US"
+                )
+
+                # اصلاح دامنه
+                url = url.replace(
+                    "api.themov.org",
+                    "api.themoviedb.org",
                 )
 
                 async with session.get(
@@ -664,37 +800,107 @@ async def upcoming(
 
                     data = await response.json()
 
-            lines = []
+            today = date.today()
+
+            movies = []
 
             for movie in data.get(
                 "results",
                 [],
-            )[:15]:
+            ):
 
-                lines.append(
-                    f"🎬 <b>{movie.get('title')}</b> — "
-                    f"{movie.get('release_date', 'TBA')}"
+                release = movie.get(
+                    "release_date"
                 )
+
+                if not release:
+                    continue
+
+                try:
+
+                    release_date = datetime.strptime(
+                        release,
+                        "%Y-%m-%d",
+                    ).date()
+
+                except Exception:
+
+                    continue
+
+                # فقط فیلم‌های امروز به بعد
+                if release_date >= today:
+
+                    movies.append(
+                        movie
+                    )
+
+            movies = movies[:15]
 
             if lang == "fa":
 
-                header = (
-                    "📅 <b>در انتظار اکران "
-                    "(زنده از TMDb)</b>\n\n"
+                header = section_header(
+                    "فیلم‌های در انتظار اکران",
+                    "📅",
                 )
 
             else:
 
-                header = (
-                    "📅 <b>Upcoming releases "
-                    "(live from TMDb)</b>\n\n"
+                header = section_header(
+                    "Upcoming Movies",
+                    "📅",
                 )
 
-            await call.message.edit_text(
-                (
+            cards = []
+
+            for i, movie in enumerate(
+                movies,
+                1,
+            ):
+
+                title = (
+                    movie.get("title")
+                    or movie.get("original_title")
+                    or "Unknown"
+                )
+
+                release = movie.get(
+                    "release_date"
+                )
+
+                cards.append(
+                    f"<b>{i}.</b> "
+                    f"<b>{clean_text(title)}</b>\n"
+                    f"📅 {format_date(release, lang)}"
+                )
+
+            if cards:
+
+                text = (
                     header
-                    + "\n".join(lines)
-                )[:4090],
+                    + "\n\n".join(cards)
+                    + footer(lang)
+                )
+
+            else:
+
+                if lang == "fa":
+
+                    text = (
+                        header
+                        + "در حال حاضر فیلمی برای نمایش پیدا نشد."
+                        + footer(lang)
+                    )
+
+                else:
+
+                    text = (
+                        header
+                        + "No upcoming movies were found."
+                        + footer(lang)
+                    )
+
+            await call.message.edit_text(
+                text[:4090],
                 reply_markup=back_kb(lang),
             )
 
@@ -708,45 +914,73 @@ async def upcoming(
                 "TMDB upcoming request failed"
             )
 
+    # --------------------------------------------------------
+    # STATIC FALLBACK
+    # --------------------------------------------------------
+
     if lang == "fa":
 
-        header = (
-            "📅 <b>در انتظار اکران "
-            "(فهرست ثابت)</b>\n\n"
+        header = section_header(
+            "فیلم‌های در انتظار اکران",
+            "📅",
         )
 
     else:
 
-        header = (
-            "📅 <b>Most anticipated upcoming "
-            "(static list)</b>\n\n"
+        header = section_header(
+            "Upcoming Movies",
+            "📅",
         )
 
-    lines = [
-        f"🎬 <b>{title}</b> — {date}\n    {desc}"
-        for title, date, desc in UPCOMING
-    ]
+    today = date.today()
 
-    if lang == "fa":
+    cards = []
 
-        footer = (
-            "\n\nℹ️ برای فهرست زنده و همیشه به‌روز، "
-            "TMDB_API_KEY را در .env تنظیم کنید."
+    for title, release, desc in UPCOMING:
+
+        try:
+
+            release_date = datetime.strptime(
+                str(release),
+                "%Y-%m-%d",
+            ).date()
+
+        except Exception:
+
+            release_date = None
+
+        if release_date and release_date < today:
+            continue
+
+        cards.append(
+            f"🎬 <b>{clean_text(title)}</b>\n"
+            f"📅 {format_date(release, lang)}"
+        )
+
+    cards = cards[:15]
+
+    if cards:
+
+        text = (
+            header
+            + "\n\n".join(cards)
+            + footer(lang)
         )
 
     else:
 
-        footer = (
-            "\n\nℹ️ For a live, always-fresh list, "
-            "set TMDB_API_KEY in .env."
+        text = (
+            header
+            + (
+                "در حال حاضر موردی وجود ندارد."
+                if lang == "fa"
+                else "No upcoming movies found."
+            )
+            + footer(lang)
         )
 
     await call.message.edit_text(
-        (
-            header
-            + "\n\n".join(lines)
-            + footer
-        )[:4090],
+        text[:4090],
         reply_markup=back_kb(lang),
     )
 
@@ -754,7 +988,7 @@ async def upcoming(
 
 
 # ============================================================
-# TMDB PERSON SEARCH
+# TMDB PERSON
 # ============================================================
 
 async def _tmdb_person_credits(
@@ -765,12 +999,16 @@ async def _tmdb_person_credits(
     if not TMDB_API_KEY:
         return None
 
+    encoded_name = quote_plus(
+        name
+    )
+
     async with aiohttp.ClientSession() as session:
 
         search_url = (
             "https://api.themoviedb.org/3/search/person"
             f"?api_key={TMDB_API_KEY}"
-            f"&query={name}"
+            f"&query={encoded_name}"
         )
 
         async with session.get(
@@ -819,13 +1057,50 @@ async def _tmdb_person_credits(
             reverse=True,
         )
 
-        return [
-            (
-                f"{movie.get('title')} "
-                f"({(movie.get('release_date') or 'TBA')[:4]})"
+        result = []
+
+        seen = set()
+
+        for movie in cast:
+
+            title = movie.get(
+                "title"
             )
-            for movie in cast[:10]
-        ]
+
+            if not title:
+                continue
+
+            if title in seen:
+                continue
+
+            seen.add(
+                title
+            )
+
+            release = (
+                movie.get(
+                    "release_date"
+                )
+                or ""
+            )
+
+            year = (
+                release[:4]
+                if release
+                else "TBA"
+            )
+
+            result.append(
+                (
+                    title,
+                    year,
+                )
+            )
+
+            if len(result) >= 10:
+                break
+
+        return result
 
 
 # ============================================================
@@ -892,32 +1167,66 @@ async def do_actor_search(
         user.id
     )
 
-    name = message.text.strip().lower()
+    query = message.text.strip()
 
     result = ACTORS.get(
-        name
+        query.lower()
     )
 
     if not result and TMDB_API_KEY:
 
         result = await _tmdb_person_credits(
-            message.text.strip(),
+            query,
             lang,
         )
 
     if result:
 
-        title = (
-            f"🎭 <b>{message.text.strip()}</b> "
-            f"— Top 10:\n\n"
+        header = section_header(
+            f"آثار {query}"
+            if lang == "fa"
+            else f"Works by {query}",
+            "🎭",
+        )
+
+        lines = []
+
+        for i, item in enumerate(
+            result[:10],
+            1,
+        ):
+
+            if isinstance(
+                item,
+                tuple,
+            ):
+
+                title = item[0]
+                year = item[1]
+
+            else:
+
+                title = str(item)
+                year = None
+
+            lines.append(
+                f"<b>{i}.</b> "
+                f"{clean_text(title)}"
+                + (
+                    f"\n📅 {year}"
+                    if year
+                    else ""
+                )
+            )
+
+        text = (
+            header
+            + "\n\n".join(lines)
+            + footer(lang)
         )
 
         await message.answer(
-            title
-            + "\n".join(
-                f"{i + 1}. {x}"
-                for i, x in enumerate(result)
-            ),
+            text[:4090],
             reply_markup=back_kb(lang),
         )
 
@@ -998,32 +1307,66 @@ async def do_director_search(
         user.id
     )
 
-    name = message.text.strip().lower()
+    query = message.text.strip()
 
     result = DIRECTORS.get(
-        name
+        query.lower()
     )
 
     if not result and TMDB_API_KEY:
 
         result = await _tmdb_person_credits(
-            message.text.strip(),
+            query,
             lang,
         )
 
     if result:
 
-        title = (
-            f"🎬 <b>{message.text.strip()}</b> "
-            f"— Top 10:\n\n"
+        header = section_header(
+            f"آثار {query}"
+            if lang == "fa"
+            else f"Works by {query}",
+            "🎬",
+        )
+
+        lines = []
+
+        for i, item in enumerate(
+            result[:10],
+            1,
+        ):
+
+            if isinstance(
+                item,
+                tuple,
+            ):
+
+                title = item[0]
+                year = item[1]
+
+            else:
+
+                title = str(item)
+                year = None
+
+            lines.append(
+                f"<b>{i}.</b> "
+                f"{clean_text(title)}"
+                + (
+                    f"\n📅 {year}"
+                    if year
+                    else ""
+                )
+            )
+
+        text = (
+            header
+            + "\n\n".join(lines)
+            + footer(lang)
         )
 
         await message.answer(
-            title
-            + "\n".join(
-                f"{i + 1}. {x}"
-                for i, x in enumerate(result)
-            ),
+            text[:4090],
             reply_markup=back_kb(lang),
         )
 
@@ -1041,7 +1384,7 @@ async def do_director_search(
 
 
 # ============================================================
-# COMPARE MOVIE
+# COMPARE
 # ============================================================
 
 @router.callback_query(
@@ -1110,7 +1453,9 @@ async def do_compare(
     rt = None
     meta = None
 
-    found_locally = False
+    # --------------------------------------------------------
+    # LOCAL
+    # --------------------------------------------------------
 
     for r in IMDB_TOP:
 
@@ -1120,20 +1465,27 @@ async def do_compare(
             rt = r[5]
             meta = r[6]
 
-            found_locally = True
-
             break
 
-    if not found_locally and OMDB_API_KEY:
+    # --------------------------------------------------------
+    # OMDB
+    # --------------------------------------------------------
+
+    if (
+        imdb is None
+        and rt is None
+        and meta is None
+        and OMDB_API_KEY
+    ):
 
         try:
 
             async with aiohttp.ClientSession() as session:
 
                 url = (
-                    "http://www.omdbapi.com/"
+                    "https://www.omdbapi.com/"
                     f"?apikey={OMDB_API_KEY}"
-                    f"&t={query}"
+                    f"&t={quote_plus(query)}"
                 )
 
                 async with session.get(
@@ -1152,28 +1504,33 @@ async def do_compare(
                     [],
                 ):
 
-                    if source["Source"] == "Internet Movie Database":
+                    source_name = source.get(
+                        "Source"
+                    )
 
-                        imdb = source[
-                            "Value"
-                        ].split(
+                    value = source.get(
+                        "Value"
+                    )
+
+                    if not value:
+                        continue
+
+                    if source_name == "Internet Movie Database":
+
+                        imdb = value.split(
                             "/"
                         )[0]
 
-                    elif source["Source"] == "Rotten Tomatoes":
+                    elif source_name == "Rotten Tomatoes":
 
-                        rt = source[
-                            "Value"
-                        ].replace(
+                        rt = value.replace(
                             "%",
                             "",
                         )
 
-                    elif source["Source"] == "Metacritic":
+                    elif source_name == "Metacritic":
 
-                        meta = source[
-                            "Value"
-                        ].split(
+                        meta = value.split(
                             "/"
                         )[0]
 
@@ -1183,11 +1540,23 @@ async def do_compare(
                 "OMDb request failed"
             )
 
-    header = t(
-        "compare_header",
-        lang,
-        title=query,
-    )
+    # --------------------------------------------------------
+    # OUTPUT
+    # --------------------------------------------------------
+
+    if lang == "fa":
+
+        header = section_header(
+            f"مقایسه «{query}»",
+            "⚖️",
+        )
+
+    else:
+
+        header = section_header(
+            f"Rating for “{query}”",
+            "⚖️",
+        )
 
     if (
         imdb is None
@@ -1195,33 +1564,33 @@ async def do_compare(
         and meta is None
     ):
 
-        await message.answer(
-            header
-            + t(
-                "not_found_local",
-                lang,
-            ),
-            reply_markup=back_kb(lang),
+        body = t(
+            "not_found_local",
+            lang,
         )
 
     else:
 
         body = (
-            f"⭐ IMDb: <b>{imdb or '—'}</b>/10\n"
-            f"🍅 Rotten Tomatoes: <b>{rt or '—'}</b>%\n"
-            f"🅼 Metacritic: <b>{meta or '—'}</b>/100"
+            f"⭐ <b>IMDb</b>       {imdb or '—'}/10\n"
+            f"🍅 <b>Rotten Tomatoes</b>   {rt or '—'}%\n"
+            f"🎯 <b>Metacritic</b>   {meta or '—'}/100"
         )
 
-        await message.answer(
-            header + body,
-            reply_markup=back_kb(lang),
-        )
+    await message.answer(
+        (
+            header
+            + body
+            + footer(lang)
+        )[:4090],
+        reply_markup=back_kb(lang),
+    )
 
     await state.clear()
 
 
 # ============================================================
-# SMART RECOMMENDATION QUIZ
+# RECOMMENDATION QUIZ
 # ============================================================
 
 @router.callback_query(
@@ -1267,10 +1636,6 @@ async def start_quiz(
     await call.answer()
 
 
-# ============================================================
-# QUIZ MOOD
-# ============================================================
-
 @router.callback_query(
     Quiz.mood,
     F.data.startswith("mood:")
@@ -1314,10 +1679,6 @@ async def quiz_mood(
 
     await call.answer()
 
-
-# ============================================================
-# QUIZ GENRE
-# ============================================================
 
 @router.callback_query(
     Quiz.genre,
@@ -1363,10 +1724,6 @@ async def quiz_genre(
     await call.answer()
 
 
-# ============================================================
-# QUIZ MBTI
-# ============================================================
-
 @router.callback_query(
     Quiz.mbti,
     F.data.startswith("mbti:")
@@ -1410,10 +1767,6 @@ async def quiz_mbti(
     await call.answer()
 
 
-# ============================================================
-# QUIZ LIKED
-# ============================================================
-
 @router.message(
     Quiz.liked
 )
@@ -1446,6 +1799,7 @@ async def quiz_liked(
         else [
             x.strip()
             for x in text.split(",")
+            if x.strip()
         ]
     )
 
@@ -1464,10 +1818,6 @@ async def quiz_liked(
         Quiz.disliked
     )
 
-
-# ============================================================
-# QUIZ DISLIKED
-# ============================================================
 
 @router.message(
     Quiz.disliked
@@ -1501,6 +1851,7 @@ async def quiz_disliked(
         else [
             x.strip()
             for x in text.split(",")
+            if x.strip()
         ]
     )
 
@@ -1531,41 +1882,56 @@ async def quiz_disliked(
         top_n=6,
     )
 
-    lines = []
+    if not results:
+
+        await message.answer(
+            (
+                "نتیجه‌ای پیدا نشد."
+                if lang == "fa"
+                else "No recommendations found."
+            ),
+            reply_markup=back_kb(lang),
+        )
+
+        await state.clear()
+
+        return
+
+    header = section_header(
+        "پیشنهادهای مخصوص شما"
+        if lang == "fa"
+        else "Your Recommendations",
+        "✨",
+    )
+
+    cards = []
 
     for i, item in enumerate(
         results,
         1,
     ):
 
-        rt_s = (
-            f"{item['rt']}%"
-            if item["rt"] is not None
-            else "—"
+        cards.append(
+            f"<b>{i}.</b>\n"
+            + movie_card(
+                title=item["title"],
+                year=item["year"],
+                imdb=item["imdb"],
+                rt=item["rt"],
+                meta=item["meta"],
+                genres=item["genres"],
+                lang=lang,
+            )
         )
 
-        meta_s = (
-            f"{item['meta']}"
-            if item["meta"] is not None
-            else "—"
-        )
-
-        lines.append(
-            f"{i}. <b>{item['title']}</b> "
-            f"({item['year']})\n"
-            f"    {', '.join(item['genres'])}\n"
-            f"    IMDb {item['imdb']} | "
-            f"RT {rt_s} | "
-            f"Metacritic {meta_s}"
-        )
+    text = (
+        header
+        + "\n\n".join(cards)
+        + footer(lang)
+    )
 
     await message.answer(
-        t(
-            "recommend_header",
-            lang,
-        )
-        + "\n\n"
-        + "\n\n".join(lines),
+        text[:4090],
         reply_markup=back_kb(lang),
     )
 
@@ -1578,10 +1944,6 @@ async def quiz_disliked(
 
 async def main():
 
-    # --------------------------------------------------------
-    # Validate BOT TOKEN
-    # --------------------------------------------------------
-
     if (
         not BOT_TOKEN
         or ":" not in BOT_TOKEN
@@ -1592,52 +1954,32 @@ async def main():
             "Set BOT_TOKEN in Render Environment Variables."
         )
 
-    # --------------------------------------------------------
-    # Initialize admin database
-    # --------------------------------------------------------
-
+    # Initialize admin DB
     init_admin_db()
 
     logger.info(
         "Admin database initialized."
     )
 
-    # --------------------------------------------------------
-    # Create Bot
-    # --------------------------------------------------------
-
     bot = Bot(
         token=BOT_TOKEN
     )
-
-    # --------------------------------------------------------
-    # Dispatcher
-    # --------------------------------------------------------
 
     dp = Dispatcher(
         storage=MemoryStorage()
     )
 
-    # --------------------------------------------------------
-    # Main MovieBot Router
-    # --------------------------------------------------------
-
+    # MovieBot
     dp.include_router(
         router
     )
 
-    # --------------------------------------------------------
-    # Admin Router
-    # --------------------------------------------------------
-
+    # Admin
     dp.include_router(
         admin_router
     )
 
-    # --------------------------------------------------------
-    # Remove webhook
-    # --------------------------------------------------------
-
+    # Polling
     await bot.delete_webhook(
         drop_pending_updates=False
     )
@@ -1664,10 +2006,8 @@ async def main():
 
 if __name__ == "__main__":
 
-    # Start Render health server
     keep_alive()
 
-    # Start Telegram bot
     try:
 
         asyncio.run(
